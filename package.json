@@ -2,6 +2,14 @@
   "name": "@brain0pia/pi-ultrathink",
   "version": "0.1.0",
   "description": "Pi extension for /ultrathink review loops with conditional git commits",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/brainopia/pi-ultrathink.git"
+  },
+  "homepage": "https://github.com/brainopia/pi-ultrathink",
+  "bugs": {
+    "url": "https://github.com/brainopia/pi-ultrathink/issues"
+  },
   "type": "module",
   "keywords": [
     "pi-package",
