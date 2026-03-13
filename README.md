@@ -11,6 +11,10 @@ By adding a simple `/ultrathink` command, it transforms single-shot generations 
 
 Standard LLM interactions are one-and-done. But complex software engineering tasks—like heavy refactors, tricky bug fixes, or architecture shifts—often require multiple passes:
 
+Think of `pi-ultrathink` as manually dialing up the `thinking_budget` or `reasoning_effort` of a model—but specifically focused on double-checking and self-correction. Just like humans produce better code when they review their own work or take a second look, models significantly improve when forced into an explicit verification pass. 
+
+But it doesn't stop at just "check your work." Because you can edit the **review prompt** before the loop starts, you can use `ultrathink` to encourage the model to keep trying until it makes progress on a specific metric—like getting a test suite to pass or satisfying a particular evaluation script.
+
 1. Draft the initial implementation
 2. Review the changes against the original goal
 3. Fix edge cases or missed requirements
@@ -92,6 +96,14 @@ This provides a granular undo history. You can easily roll back to a specific it
 ```bash
 git log --oneline --graph
 ```
+
+## 🔮 Roadmap / Future Ideas
+
+- **Context Management Modes:**
+  - `clean mode`: Complete context reset between iterations to prevent the model from getting stuck in a rut.
+  - `careful mode`: Context reset triggered automatically when the conversation hits a specific token percentage threshold.
+- **Improved VS Code Copilot Support:** Run all iterations within a single request by leveraging the `ask_user` tool to integrate the auto-review seamlessly.
+- **Oracle Model Support:** Allow a distinct, separate model (e.g., a larger or specialized reasoning model) to conduct the auto-review instead of the model that wrote the code.
 
 ## 📦 Installation
 
