@@ -24,9 +24,11 @@
 - `src/index.ts` — extension entry point; command registration, event wiring, run lifecycle
 - `src/config.ts` — loads and validates `.pi/ultrathink.json`
 - `src/git.ts` — repository checks, dirty-repo preflight, conditional commits, branch handling
-- `src/review.ts` — default continuation prompt, review prompt assembly, answer digesting, stop decisions
+- `src/review.ts` — review prompt assembly, answer digesting, stop decisions
+- `src/promptTemplate.ts` — shared default continuation prompt text
+- `src/promptEditor.ts` — lazily loaded TUI prompt editor for the continuation template
 - `src/state.ts` — active run creation and persisted custom session entries
-- `src/ui.ts` — TUI prompt editor, status line, completion summary message
+- `src/ui.ts` — lightweight status line and completion summary helpers
 - `src/types.ts` — shared types for runtime and tests
 - `test/support/fakePi.ts` — fake Pi extension harness for deterministic tests
 - `test/support/gitTestUtils.ts` — temp git repo helpers and real `git` execution for tests

@@ -1,6 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
-import { DEFAULT_CONTINUATION_PROMPT_TEMPLATE } from "./review.js";
+import { DEFAULT_CONTINUATION_PROMPT_TEMPLATE } from "./promptTemplate.js";
 import type { UltrathinkConfig } from "./types.js";
 
 export const ULTRATHINK_CONFIG_PATH = path.join(".pi", "ultrathink.json");

@@ -1,15 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { loadUltrathinkConfig } from "./config.js";
-import {
-  NO_REPOSITORY_CHANGES_NOTE,
-  captureGitSnapshot,
-  commitIterationIfChanged,
-  prepareGitRun,
-} from "./git.js";
-import { buildReviewPrompt, computeAnswerDigest, decideStop } from "./review.js";
-import { createActiveRun, createRunId, persistIteration, persistRunStart, persistStop } from "./state.js";
 import type { ActiveRun, IterationRecord, StopReason } from "./types.js";
-import { promptForContinuationTemplate, sendCompletionMessage, setUltrathinkStatus } from "./ui.js";
+import { sendCompletionMessage, setUltrathinkStatus } from "./ui.js";
 
 type AssistantLike = {
   role: "assistant";
@@ -33,6 +24,32 @@ type SessionMessageEntryLike = {
   id: string;
   message: AgentMessageLike;
 };
+
+let configModulePromise: Promise<typeof import("./config.js")> | undefined;
+let gitModulePromise: Promise<typeof import("./git.js")> | undefined;
+let promptEditorModulePromise: Promise<typeof import("./promptEditor.js")> | undefined;
+let reviewModulePromise: Promise<typeof import("./review.js")> | undefined;
+let stateModulePromise: Promise<typeof import("./state.js")> | undefined;
+
+function loadConfigModule(): Promise<typeof import("./config.js")> {
+  return (configModulePromise ??= import("./config.js"));
+}
+
+function loadGitModule(): Promise<typeof import("./git.js")> {
+  return (gitModulePromise ??= import("./git.js"));
+}
+
+function loadPromptEditorModule(): Promise<typeof import("./promptEditor.js")> {
+  return (promptEditorModulePromise ??= import("./promptEditor.js"));
+}
+
+function loadReviewModule(): Promise<typeof import("./review.js")> {
+  return (reviewModulePromise ??= import("./review.js"));
+}
+
+function loadStateModule(): Promise<typeof import("./state.js")> {
+  return (stateModulePromise ??= import("./state.js"));
+}
 
 function isAssistantMessage(message: AgentMessageLike): message is AssistantLike {
   return message.role === "assistant" && Array.isArray(message.content);
@@ -84,7 +101,7 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     setUltrathinkStatus(ctx, undefined);
   }
 
-  function finishRun(ctx: ExtensionContext, stopReason: StopReason): void {
+  async function finishRun(ctx: ExtensionContext, stopReason: StopReason): Promise<void> {
     const run = activeRun;
     if (!run) return;
 
@@ -93,14 +110,16 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       lastIteration.stopReason = stopReason;
     }
 
+    const { persistStop } = await loadStateModule();
     persistStop(pi, run, stopReason);
     sendCompletionMessage(pi, { run, stopReason, iterations: run.iterations });
     clearRunState(ctx);
   }
 
+
   async function startRun(promptText: string, ctx: ExtensionCommandContext): Promise<void> {
     if (activeRun) {
-      finishRun(ctx, "cancelled-by-user");
+      await finishRun(ctx, "cancelled-by-user");
     }
 
     if (!ctx.isIdle()) {
@@ -108,8 +127,17 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       await ctx.waitForIdle();
     }
 
+    const promptEditorPromise = ctx.hasUI ? loadPromptEditorModule() : undefined;
+    const [{ loadUltrathinkConfig }, { prepareGitRun }, { createActiveRun, createRunId, persistRunStart }] = await Promise.all([
+      loadConfigModule(),
+      loadGitModule(),
+      loadStateModule(),
+    ]);
+
     const config = await loadUltrathinkConfig(ctx.cwd);
-    const continuationPromptTemplate = await promptForContinuationTemplate(ctx, config.continuationPromptTemplate);
+    const continuationPromptTemplate = promptEditorPromise
+      ? await (await promptEditorPromise).promptForContinuationTemplate(ctx, config.continuationPromptTemplate)
+      : config.continuationPromptTemplate;
     if (continuationPromptTemplate === null) {
       ctx.ui.notify("Ultrathink start cancelled.", "info");
       return;
@@ -155,7 +183,6 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     },
   });
 
-
   pi.on("session_start", async (_event, ctx) => {
     clearRunState(ctx);
   });
@@ -174,7 +201,7 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     activeRun.awaitingExtensionFollowUp = false;
 
     if (ctx.isIdle()) {
-      finishRun(ctx, "cancelled-by-user");
+      await finishRun(ctx, "cancelled-by-user");
     }
 
     return { action: "continue" };
@@ -195,11 +222,19 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     }
 
     if (assistantMessage.stopReason === "aborted") {
-      finishRun(ctx, "cancelled-by-interrupt");
+      await finishRun(ctx, "cancelled-by-interrupt");
       return;
     }
 
     const assistantText = getAssistantText(assistantMessage);
+    const [reviewModule, gitModule, stateModule] = await Promise.all([
+      loadReviewModule(),
+      loadGitModule(),
+      loadStateModule(),
+    ]);
+    const { buildReviewPrompt, computeAnswerDigest, decideStop } = reviewModule;
+    const { NO_REPOSITORY_CHANGES_NOTE, captureGitSnapshot, commitIterationIfChanged } = gitModule;
+    const { persistIteration } = stateModule;
     const answerDigest = computeAnswerDigest(assistantText);
     const previousDigest = run.previousDigest;
     run.iteration += 1;
@@ -279,13 +314,13 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     }
 
     if (stopReason) {
-      finishRun(ctx, stopReason);
+      await finishRun(ctx, stopReason);
       return;
     }
 
     if (!commitSha) {
       record.stopReason = "git-error";
-      finishRun(ctx, "git-error");
+      await finishRun(ctx, "git-error");
       return;
     }
 
