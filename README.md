@@ -107,13 +107,16 @@ git log --oneline --graph
 
 ## 📦 Installation
 
-**Quick try (Local):**
+**Install from npm:**
 ```bash
-pi -e ./src/index.ts
+pi install @brain0pia/pi-ultrathink
 ```
 
-**Install as a Pi package:**
-Because `package.json` includes a Pi package manifest, you can install the repository as a Pi package from a local path or git source.
+**Quick try (without installation):**
+```bash
+pi -e npm:@brain0pia/pi-ultrathink
+```
+
 
 ## ⚙️ Configuration
 
