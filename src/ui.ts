@@ -59,17 +59,15 @@ export async function promptForContinuationTemplate(
           const add = (text: string) => lines.push(truncateToWidth(text, width));
           const defaultStartLine = DEFAULT_CONTINUATION_PROMPT_TEMPLATE.split("\n", 1)[0];
           add(theme.fg("accent", "─".repeat(width)));
-          add(theme.fg("accent", theme.bold(" Review prompt")));
+          add(theme.fg("accent", theme.bold(" Prompt for auto-review")));
           add(theme.fg("muted", " Pi will prepend the original task and the baseline git diff command automatically."));
-          add(theme.fg("dim", ` Body starts with: ${defaultStartLine}`));
-          add(theme.fg("muted", " Edit if needed, or press Enter to accept the current review instructions."));
 
           for (const line of editor.render(Math.max(20, width - 2))) {
             add(` ${line}`);
           }
 
           lines.push("");
-          add(theme.fg("dim", " Enter accept • Shift+Enter newline • Esc cancel /ultrathink"));
+          add(theme.fg("dim", " Enter accept • Shift+Enter newline • Esc clear / cancel"));
           add(theme.fg("accent", "─".repeat(width)));
           cachedLines = lines;
           return lines;
@@ -80,7 +78,12 @@ export async function promptForContinuationTemplate(
         },
         handleInput(data: string): void {
           if (matchesKey(data, Key.escape)) {
-            done(null);
+            if (editor.getText() === "") {
+              done(null);
+            } else {
+              editor.setText("");
+	      refresh();
+            }
             return;
           }
           editor.handleInput(data);
