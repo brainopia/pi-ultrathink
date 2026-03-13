@@ -1,6 +1,5 @@
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
-import { DEFAULT_CONTINUATION_PROMPT_TEMPLATE } from "./promptTemplate.js";
 
 export async function promptForContinuationTemplate(
   ctx: ExtensionCommandContext,
@@ -41,11 +40,9 @@ export async function promptForContinuationTemplate(
 
           const lines: string[] = [];
           const add = (text: string) => lines.push(truncateToWidth(text, width));
-          const defaultStartLine = DEFAULT_CONTINUATION_PROMPT_TEMPLATE.split("\n", 1)[0];
           add(theme.fg("accent", "─".repeat(width)));
           add(theme.fg("accent", theme.bold(" Prompt for auto-review")));
           add(theme.fg("muted", " Pi will prepend the original task and the baseline git diff command automatically."));
-          add(theme.fg("dim", ` Default starts: ${defaultStartLine}`));
 
           for (const line of editor.render(Math.max(20, width - 2))) {
             add(` ${line}`);
