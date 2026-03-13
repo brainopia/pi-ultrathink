@@ -83,7 +83,7 @@ The loop is completely **Git-driven**.
 
 1. **Stable State (No Changes):** If a pass results in zero changes to the Git repository, the agent has effectively said "I'm done." The loop stops immediately.
 2. **Iteration Cap:** A safety limit (`maxIterations`, default 4) prevents infinite loops.
-3. **User Cancellation:** Pressing `Escape` or typing a new prompt immediately halts the loop.
+3. **User Cancellation:** Interrupting the active agent turn (`Escape` by default) or typing a new prompt immediately halts the loop.
 
 ## 💾 Git Checkpoints
 

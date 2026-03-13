@@ -15,7 +15,7 @@ export type StopReason =
   | "max-iterations"
   | "git-error"
   | "cancelled-by-user"
-  | "cancelled-by-escape";
+  | "cancelled-by-interrupt";
 
 export interface GitSnapshot {
   repoExists: boolean;
@@ -50,7 +50,7 @@ export interface ActiveRun {
   commitsEnabled: boolean;
   awaitingExtensionFollowUp: boolean;
   expectedPromptText?: string;
-  cancelRequested?: "user" | "escape";
+  cancelRequested?: "user";
   continuationPromptTemplate: string;
   commitBodyMaxChars?: number;
   preflightGitFailure?: string;

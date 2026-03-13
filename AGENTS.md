@@ -42,7 +42,7 @@
 - Starting a new `/ultrathink` run cancels any currently active one.
 - The initial task is sent as a normal visible user message via `pi.sendUserMessage(promptText)`.
 - Follow-up review passes are also visible user messages, not hidden control messages.
-- `Escape` cancels the active Ultrathink loop and aborts the current streaming turn when needed.
+- Pi's interrupt action (`Escape` by default) cancels the active Ultrathink loop when the current agent turn is aborted.
 - If the user types another prompt during an active run, the loop stops with `cancelled-by-user`.
 - Assistant replies for completed iterations are labeled `ultrathink:vN`.
 - Minimal state is persisted as custom session entries of type `ultrathink-state`.

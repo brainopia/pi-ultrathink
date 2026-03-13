@@ -13,8 +13,8 @@ function describeStopReason(stopReason: StopReason): string {
       return "git-backed iteration tracking failed, so no further automatic reviews were queued";
     case "cancelled-by-user":
       return "the user sent another prompt, so the active loop was cancelled";
-    case "cancelled-by-escape":
-      return "Escape cancelled the active loop";
+    case "cancelled-by-interrupt":
+      return "the active agent turn was interrupted, so the loop was cancelled";
   }
 }
 

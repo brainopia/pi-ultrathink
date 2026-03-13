@@ -1,6 +1,6 @@
 {
   "name": "@brain0pia/pi-ultrathink",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Pi extension for /ultrathink review loops with conditional git commits",
   "license": "MIT",
   "repository": {

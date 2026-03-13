@@ -70,33 +70,25 @@ describe("Ultrathink orchestration", () => {
     expect(env.customMessages[0]?.message.content).toContain("user sent another prompt");
   });
 
-  it("cancels the active streaming turn when Escape is pressed", async () => {
+  it("cancels the loop when pi aborts the current agent turn", async () => {
     const cwd = await createTempGitRepo("ultrathink-orchestration-escape-");
     const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
     ultrathinkExtension(env.api);
-
+    expect(env.shortcuts.has("escape")).toBe(false);
     await env.invokeCommand("ultrathink", "Refine the draft");
     await writeRepoFile(cwd, "draft.txt", "v1\n");
-
-    env.setLeafAssistantEntry("assistant-1", "Draft v1");
     await env.emit("agent_end", {
       type: "agent_end",
       messages: [user("Refine the draft"), assistant("Draft v1")],
     });
-
-    env.idle = false;
-    await env.invokeShortcut("escape");
-    expect(env.aborted).toBe(1);
-
     const reviewPrompt = String(env.userMessages[1]?.content);
     env.setLeafAssistantEntry("assistant-2", "Partial draft", "aborted");
     await env.emit("agent_end", {
       type: "agent_end",
       messages: [user(reviewPrompt), assistant("Partial draft", "aborted")],
     });
-
     expect(env.customMessages).toHaveLength(1);
-    expect(env.customMessages[0]?.message.content).toContain("Escape cancelled");
+    expect(env.customMessages[0]?.message.content).toContain("agent turn was interrupted");
     expect(env.userMessages).toHaveLength(2);
   });
 });

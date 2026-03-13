@@ -155,21 +155,6 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     },
   });
 
-  pi.registerShortcut("escape", {
-    description: "Cancel the active Ultrathink loop",
-    handler: async (ctx) => {
-      if (!activeRun) return;
-
-      activeRun.cancelRequested = "escape";
-      activeRun.awaitingExtensionFollowUp = false;
-      if (!ctx.isIdle()) {
-        ctx.abort();
-        return;
-      }
-
-      finishRun(ctx, "cancelled-by-escape");
-    },
-  });
 
   pi.on("session_start", async (_event, ctx) => {
     clearRunState(ctx);
@@ -209,8 +194,8 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       return;
     }
 
-    if (run.cancelRequested === "escape" && assistantMessage.stopReason === "aborted") {
-      finishRun(ctx, "cancelled-by-escape");
+    if (assistantMessage.stopReason === "aborted") {
+      finishRun(ctx, "cancelled-by-interrupt");
       return;
     }
 
@@ -263,8 +248,6 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     if (!stopReason) {
       if (run.cancelRequested === "user") {
         stopReason = "cancelled-by-user";
-      } else if (run.cancelRequested === "escape") {
-        stopReason = "cancelled-by-escape";
       } else {
         stopReason = decideStop({
           iteration: run.iteration,
