@@ -109,7 +109,7 @@ git log --oneline --graph
 
 **Install from npm:**
 ```bash
-pi install @brain0pia/pi-ultrathink
+pi install npm:@brain0pia/pi-ultrathink
 ```
 
 **Quick try (without installation):**
