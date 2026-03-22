@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import ultrathinkExtension from "../src/index.js";
 import { createFakePiEnvironment } from "./support/fakePi.js";
+import { getUltrathinkConfigPath } from "../src/config.js";
+import { writeFile } from "node:fs/promises";
 import { createTempGitRepo, execWithCwd, writeRepoFile } from "./support/gitTestUtils.js";
+import { installTempGlobalUltrathinkConfigPath } from "./support/globalConfigTestUtils.js";
+import { installDeterministicNaming, resetDeterministicNaming } from "./support/namingTestUtils.js";
 
 function assistant(text: string, stopReason = "stop") {
   return {
@@ -19,7 +23,19 @@ function user(text: string) {
 }
 
 describe("Ultrathink orchestration", () => {
-  it("stops when an iteration produces no repository changes", async () => {
+  let restoreGlobalConfigPath: (() => void) | undefined;
+
+  beforeEach(async () => {
+    restoreGlobalConfigPath = await installTempGlobalUltrathinkConfigPath();
+    installDeterministicNaming();
+  });
+  afterEach(() => {
+    restoreGlobalConfigPath?.();
+    restoreGlobalConfigPath = undefined;
+    resetDeterministicNaming();
+  });
+
+  it("stops when an iteration produces no repository changes and reintegrates the single commit without a merge commit", async () => {
     const cwd = await createTempGitRepo("ultrathink-orchestration-stop-");
     const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
     ultrathinkExtension(env.api);
@@ -42,11 +58,12 @@ describe("Ultrathink orchestration", () => {
 
     expect(env.userMessages).toHaveLength(2);
     expect(env.customMessages).toHaveLength(1);
-    expect(env.customMessages[0]?.message.content).toContain("produced no repository changes");
+    expect(env.customMessages[0]?.message.content).toContain("Reintegration: rebased ultrathink/deterministic-branch");
+    expect(env.customMessages[0]?.message.content).toContain("Scratch branch deleted: yes");
     expect(env.labels.get("assistant-2")).toBe("ultrathink:v2");
   });
 
-  it("cancels the loop when the user types another prompt", async () => {
+  it("cancels the loop when the user types another prompt and preserves the scratch branch", async () => {
     const cwd = await createTempGitRepo("ultrathink-orchestration-user-");
     const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
     ultrathinkExtension(env.api);
@@ -67,7 +84,8 @@ describe("Ultrathink orchestration", () => {
     });
 
     expect(env.customMessages).toHaveLength(1);
-    expect(env.customMessages[0]?.message.content).toContain("user sent another prompt");
+    expect(env.customMessages[0]?.message.content).toContain("scratch branch ultrathink/deterministic-branch was preserved");
+    expect(env.customMessages[0]?.message.content).toContain("Scratch branch deleted: no");
   });
 
   it("cancels the loop when pi aborts the current agent turn", async () => {
@@ -89,6 +107,39 @@ describe("Ultrathink orchestration", () => {
     });
     expect(env.customMessages).toHaveLength(1);
     expect(env.customMessages[0]?.message.content).toContain("agent turn was interrupted");
+    expect(env.customMessages[0]?.message.content).toContain("Scratch branch deleted: no");
+    expect(env.userMessages).toHaveLength(2);
+  });
+
+  it("stops with max-iterations when iteration count reaches maxIterations", async () => {
+    const configPath = getUltrathinkConfigPath();
+    await writeFile(configPath, JSON.stringify({ maxIterations: 2 }), "utf8");
+
+    const cwd = await createTempGitRepo("ultrathink-orchestration-max-iter-");
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink", "Improve iteratively");
+
+    // Iteration 1: write a file, emit agent_end with changes → commit + review prompt
+    await writeRepoFile(cwd, "iter1.txt", "iteration one\n");
+    env.setLeafAssistantEntry("assistant-1", "First iteration done");
+    await env.emit("agent_end", {
+      type: "agent_end",
+      messages: [user("Improve iteratively"), assistant("First iteration done")],
+    });
+
+    // Iteration 2: write another file, emit agent_end → hits maxIterations → stop
+    const reviewPrompt = String(env.userMessages[1]?.content);
+    await writeRepoFile(cwd, "iter2.txt", "iteration two\n");
+    env.setLeafAssistantEntry("assistant-2", "Second iteration done");
+    await env.emit("agent_end", {
+      type: "agent_end",
+      messages: [user(reviewPrompt), assistant("Second iteration done")],
+    });
+
+    expect(env.customMessages).toHaveLength(1);
+    expect(env.customMessages[0]?.message.content).toContain("iteration limit was reached");
     expect(env.userMessages).toHaveLength(2);
   });
 });

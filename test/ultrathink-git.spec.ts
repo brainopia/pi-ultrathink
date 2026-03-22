@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import ultrathinkExtension from "../src/index.js";
 import { createFakePiEnvironment } from "./support/fakePi.js";
 import { createTempGitRepo, execWithCwd, gitStdout, writeRepoFile } from "./support/gitTestUtils.js";
+import { installTempGlobalUltrathinkConfigPath } from "./support/globalConfigTestUtils.js";
+import { installDeterministicNaming, resetDeterministicNaming } from "./support/namingTestUtils.js";
 
 function assistant(text: string, stopReason = "stop") {
   return {
@@ -19,7 +21,19 @@ function user(text: string) {
 }
 
 describe("Ultrathink git integration", () => {
-  it("creates v1/v2/v3 commits and stops on the first unchanged verification pass", async () => {
+  let restoreGlobalConfigPath: (() => void) | undefined;
+
+  beforeEach(async () => {
+    restoreGlobalConfigPath = await installTempGlobalUltrathinkConfigPath();
+    installDeterministicNaming();
+  });
+  afterEach(() => {
+    restoreGlobalConfigPath?.();
+    restoreGlobalConfigPath = undefined;
+    resetDeterministicNaming();
+  });
+
+  it("creates iteration commits on the scratch branch and finishes with a descriptive merge commit", async () => {
     const cwd = await createTempGitRepo("ultrathink-git-changed-");
     const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
     ultrathinkExtension(env.api);
@@ -42,33 +56,27 @@ describe("Ultrathink git integration", () => {
     });
 
     const reviewPrompt2 = String(env.userMessages[2]?.content);
-    await writeRepoFile(cwd, "work.txt", "v3\n");
-    env.setLeafAssistantEntry("assistant-3", "Answer three");
+    env.setLeafAssistantEntry("assistant-3", "No further substantial changes");
     await env.emit("agent_end", {
       type: "agent_end",
-      messages: [user(reviewPrompt2), assistant("Answer three")],
+      messages: [user(reviewPrompt2), assistant("No further substantial changes")],
     });
 
-    const reviewPrompt3 = String(env.userMessages[3]?.content);
-    env.setLeafAssistantEntry("assistant-4", "No further substantial changes");
-    await env.emit("agent_end", {
-      type: "agent_end",
-      messages: [user(reviewPrompt3), assistant("No further substantial changes")],
-    });
+    const headSubject = (await gitStdout(cwd, ["log", "-1", "--format=%s"])) .trim();
+    const graph = await gitStdout(cwd, ["log", "--oneline", "--decorate", "--graph", "--all", "-6"]);
+    const branches = await gitStdout(cwd, ["branch", "--list", "ultrathink/*"]);
 
-    const subjects = (await gitStdout(cwd, ["log", "--format=%s", "-5"]))
-      .trim()
-      .split("\n")
-      .slice(0, 3);
-
-    expect(subjects[0]).toMatch(/ultrathink\(.+\): v3/);
-    expect(subjects[1]).toMatch(/ultrathink\(.+\): v2/);
-    expect(subjects[2]).toMatch(/ultrathink\(.+\): v1/);
-    expect(env.customMessages[0]?.message.content).toContain("produced no repository changes");
+    expect(headSubject).toBe("Merge ultrathink/deterministic-branch");
+    expect(graph).toContain("Iteration 2 touches work.txt");
+    expect(graph).toContain("Iteration 1 touches work.txt");
+    expect(branches.trim()).toBe("");
+    expect(env.customMessages[0]?.message.content).toContain("Final merge commit:");
+    expect(env.customMessages[0]?.message.content).toContain("Iteration 1 touches work.txt");
+    expect(env.customMessages[0]?.message.content).toContain("Iteration 2 touches work.txt");
   });
 
-  it("skips unchanged iterations and stores assistant output in the commit body", async () => {
-    const cwd = await createTempGitRepo("ultrathink-git-unchanged-");
+  it("reintegrates a single iteration commit without creating a merge commit", async () => {
+    const cwd = await createTempGitRepo("ultrathink-git-single-");
     const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
     ultrathinkExtension(env.api);
 
@@ -88,20 +96,37 @@ describe("Ultrathink git integration", () => {
       messages: [user(reviewPrompt), assistant("Assistant says nothing important remains")],
     });
 
-    const logSubjects = (await gitStdout(cwd, ["log", "--format=%s"]))
+    const logSubjects = (await gitStdout(cwd, ["log", "--format=%s", "-3"]))
       .trim()
       .split("\n")
-      .filter((line) => line.includes("ultrathink("));
-    expect(logSubjects).toHaveLength(1);
-    expect(logSubjects[0]).toMatch(/: v1$/);
-
+      .filter(Boolean);
     const body = await gitStdout(cwd, ["log", "-1", "--format=%B"]);
-    expect(body).toContain("Assistant output for iteration v1:");
-    expect(body).toContain("Assistant output v1");
-    expect(env.customMessages[0]?.message.content).toContain("no repository changes, no commit");
+    const branchList = await gitStdout(cwd, ["branch", "--list", "ultrathink/*"]);
+
+    expect(logSubjects[0]).toBe("Iteration 1 touches app.txt");
+    expect(logSubjects[1]).toBe("initial");
+    expect(body).toContain("Summary for iteration v1.");
+    expect(branchList.trim()).toBe("");
+    expect(env.customMessages[0]?.message.content).not.toContain("Final merge commit:");
+    expect(env.customMessages[0]?.message.content).toContain("Scratch branch deleted: yes");
   });
 
-  it("records a git error when the repository is already dirty", async () => {
+  it("retries branch slug generation when the first ultrathink branch name already exists", async () => {
+    resetDeterministicNaming();
+    installDeterministicNaming({ slugs: ["deterministic-branch", "fresh-branch"] });
+    const cwd = await createTempGitRepo("ultrathink-git-branch-collision-");
+    await execWithCwd("git", ["checkout", "-b", "ultrathink/deterministic-branch"], { cwd });
+    await execWithCwd("git", ["checkout", "-"], { cwd });
+
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink", "Handle branch collisions");
+
+    expect((await gitStdout(cwd, ["branch", "--show-current"])).trim()).toBe("ultrathink/fresh-branch");
+  });
+
+  it("refuses to start when the repository is already dirty", async () => {
     const cwd = await createTempGitRepo("ultrathink-git-dirty-");
     await writeRepoFile(cwd, "dirty.txt", "already dirty\n");
 
@@ -110,14 +135,73 @@ describe("Ultrathink git integration", () => {
 
     await env.invokeCommand("ultrathink", "Review despite dirty repo");
 
-    env.setLeafAssistantEntry("assistant-1", "Answer with no commit");
+    expect(env.userMessages).toHaveLength(0);
+    expect(env.customMessages).toHaveLength(0);
+    expect(env.ui.notifications.at(-1)?.message).toContain("clean git working tree");
+    expect((await gitStdout(cwd, ["branch", "--show-current"])).trim()).not.toContain("ultrathink/");
+  });
+
+  it("deletes the scratch branch and returns to main when no iteration commits were created", async () => {
+    const cwd = await createTempGitRepo("ultrathink-git-zero-commit-");
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink", "Do nothing useful");
+
+    // Emit agent_end with no file changes → no-git-changes → stop
+    env.setLeafAssistantEntry("assistant-1", "Nothing to change");
     await env.emit("agent_end", {
       type: "agent_end",
-      messages: [user("Review despite dirty repo"), assistant("Answer with no commit")],
+      messages: [user("Do nothing useful"), assistant("Nothing to change")],
     });
 
-    expect(env.customMessages[0]?.message.content).toContain("git-backed iteration tracking failed");
-    const gitStatus = await execWithCwd("git", ["status", "--porcelain"], { cwd });
-    expect(gitStatus.stdout).toContain("dirty.txt");
+    expect(env.customMessages).toHaveLength(1);
+    expect(env.customMessages[0]?.message.content).toContain("no iteration commits were created");
+    expect(env.customMessages[0]?.message.content).toContain("Scratch branch deleted: yes");
+
+    const branches = await gitStdout(cwd, ["branch", "--list", "ultrathink/*"]);
+    expect(branches.trim()).toBe("");
+
+    const currentBranch = (await gitStdout(cwd, ["branch", "--show-current"])).trim();
+    expect(currentBranch).toBe("main");
+  });
+
+  it("preserves the scratch branch when rebase conflicts occur during reintegration", async () => {
+    const cwd = await createTempGitRepo("ultrathink-git-conflict-");
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink", "Make conflicting changes");
+
+    // Iteration 1: write conflict.txt on scratch branch
+    await writeRepoFile(cwd, "conflict.txt", "from-ultrathink\n");
+    env.setLeafAssistantEntry("assistant-1", "Wrote conflict.txt");
+    await env.emit("agent_end", {
+      type: "agent_end",
+      messages: [user("Make conflicting changes"), assistant("Wrote conflict.txt")],
+    });
+
+    // Simulate a conflicting commit on the original branch while on the scratch branch
+    await execWithCwd("git", ["checkout", "main"], { cwd });
+    await writeRepoFile(cwd, "conflict.txt", "from-main\n");
+    await execWithCwd("git", ["add", "conflict.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "main-side conflict"], { cwd });
+    await execWithCwd("git", ["checkout", "ultrathink/deterministic-branch"], { cwd });
+
+    // Iteration 2: no changes → triggers stop → reintegration attempt → conflict
+    const reviewPrompt = String(env.userMessages[1]?.content);
+    env.setLeafAssistantEntry("assistant-2", "No further changes");
+    await env.emit("agent_end", {
+      type: "agent_end",
+      messages: [user(reviewPrompt), assistant("No further changes")],
+    });
+
+    expect(env.customMessages).toHaveLength(1);
+    const summary = env.customMessages[0]?.message.content ?? "";
+    expect(summary).toMatch(/preserved|failed/i);
+    expect(summary).toContain("Scratch branch deleted: no");
+
+    const branches = await gitStdout(cwd, ["branch", "--list", "ultrathink/*"]);
+    expect(branches.trim()).not.toBe("");
   });
 });

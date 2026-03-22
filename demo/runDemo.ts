@@ -1,29 +1,35 @@
-import path from "node:path";
 import { DefaultResourceLoader, SessionManager, createAgentSession } from "@mariozechner/pi-coding-agent";
-import { DEMO_MODEL, createScriptedProviderExtension, demoApplyChangeTool, type DemoStep } from "./fakeProvider.js";
+import ultrathinkExtension from "../src/index.js";
+import { DEMO_CODING_MODEL, createScriptedProviderExtension, demoApplyChangeTool, type DemoStep } from "./fakeProvider.js";
+import { setNamingTestOverrides } from "../src/naming.js";
+import { installTempGlobalUltrathinkConfigPath } from "../test/support/globalConfigTestUtils.js";
 import { createTempGitRepo, gitStdout } from "../test/support/gitTestUtils.js";
 
 interface ScenarioResult {
   cwd: string;
   stopReason: string | undefined;
   iterationSummaries: string[];
-  transcriptLines: string[];
   gitLogLines: string[];
+  finalizationLine: string | undefined;
 }
 
 type UltrathinkStateEntry = {
   type: "custom";
-  id: string;
-  parentId: string | null;
-  timestamp: string;
   customType: "ultrathink-state";
   data?: {
     kind?: "start" | "iteration" | "stop";
     label?: string;
     commitCreated?: boolean;
     commitSha?: string;
+    commitSubject?: string;
     commitNote?: string;
     stopReason?: string;
+    finalization?: {
+      mode?: string;
+      scratchBranchDeleted?: boolean;
+      mergeCommitSha?: string;
+      mergeCommitSubject?: string;
+    };
   };
 };
 
@@ -48,14 +54,13 @@ function findLastEntry<T>(items: T[], predicate: (item: T) => boolean): T | unde
   return undefined;
 }
 
-
-async function waitForStopEntry(sessionManager: SessionManager, timeoutMs = 5_000): Promise<void> {
+async function waitForStopEntry(sessionManager: SessionManager, timeoutMs = 5_000): Promise<UltrathinkStateEntry> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const entries: UltrathinkStateEntry[] = sessionManager.getEntries().filter(isUltrathinkStateEntry);
+    const entries = sessionManager.getEntries().filter(isUltrathinkStateEntry) as UltrathinkStateEntry[];
     const stopEntry = findLastEntry(entries, (entry) => entry.data?.kind === "stop");
     if (stopEntry) {
-      return;
+      return stopEntry;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -67,14 +72,16 @@ async function runScenario(name: string, steps: DemoStep[]): Promise<ScenarioRes
   const sessionManager = SessionManager.inMemory(cwd);
   const loader = new DefaultResourceLoader({
     cwd,
-    additionalExtensionPaths: [path.resolve("src/index.ts")],
-    extensionFactories: [createScriptedProviderExtension(steps)],
+    noExtensions: true,
+    extensionFactories: [ultrathinkExtension, createScriptedProviderExtension(steps)],
   });
   await loader.reload();
 
   const { session } = await createAgentSession({
     cwd,
-    model: { ...DEMO_MODEL, input: [...DEMO_MODEL.input] } as typeof DEMO_MODEL & { input: Array<"text" | "image"> },
+    model: { ...DEMO_CODING_MODEL, input: [...DEMO_CODING_MODEL.input] } as typeof DEMO_CODING_MODEL & {
+      input: Array<"text" | "image">;
+    },
     resourceLoader: loader,
     sessionManager,
     customTools: [demoApplyChangeTool as any],
@@ -82,33 +89,14 @@ async function runScenario(name: string, steps: DemoStep[]): Promise<ScenarioRes
 
   await session.prompt("/ultrathink Fix the task and keep improving until stable");
   await session.agent.waitForIdle();
-  await waitForStopEntry(sessionManager);
+  const stopEntry = await waitForStopEntry(sessionManager);
 
-  const transcriptLines = session.messages.flatMap((message) => {
-    if (message.role === "user") {
-      return [`user: ${typeof message.content === "string" ? message.content : "[structured user message]"}`];
-    }
-    if (message.role === "assistant") {
-      const text = message.content
-        .filter((block): block is { type: "text"; text: string } => block.type === "text")
-        .map((block) => block.text)
-        .join("\n");
-      return [`assistant: ${text}`];
-    }
-    if (message.role === "custom") {
-      return [`custom: ${String(message.content)}`];
-    }
-    return [];
-  });
-
-  const stateEntries: UltrathinkStateEntry[] = sessionManager.getEntries().filter(isUltrathinkStateEntry);
+  const stateEntries = sessionManager.getEntries().filter(isUltrathinkStateEntry) as UltrathinkStateEntry[];
   const iterationEntries = stateEntries.filter((entry) => entry.data?.kind === "iteration");
-  const stopEntry = findLastEntry(stateEntries, (entry) => entry.data?.kind === "stop");
-
   const iterationSummaries = iterationEntries.map((entry) => {
     const label = String(entry.data?.label);
-    if (entry.data?.commitCreated && entry.data?.commitSha) {
-      return `iteration ${label}: commit created (${entry.data.commitSha})`;
+    if (entry.data?.commitCreated && entry.data?.commitSha && entry.data?.commitSubject) {
+      return `iteration ${label}: ${entry.data.commitSha} ${entry.data.commitSubject}`;
     }
     return `iteration ${label}: ${entry.data?.commitNote ?? "no repository changes, no commit"}`;
   });
@@ -118,52 +106,86 @@ async function runScenario(name: string, steps: DemoStep[]): Promise<ScenarioRes
     .split("\n")
     .filter(Boolean);
 
+  const finalizationLine = stopEntry.data?.finalization?.mergeCommitSubject
+    ? `final merge commit: ${stopEntry.data.finalization.mergeCommitSha ?? "(no sha)"} ${stopEntry.data.finalization.mergeCommitSubject}`
+    : `finalization mode: ${stopEntry.data?.finalization?.mode ?? "unknown"}; scratch branch deleted: ${stopEntry.data?.finalization?.scratchBranchDeleted ? "yes" : "no"}`;
+
   return {
     cwd,
-    stopReason: stopEntry?.data?.stopReason,
+    stopReason: stopEntry.data?.stopReason,
     iterationSummaries,
-    transcriptLines,
     gitLogLines,
+    finalizationLine,
   };
 }
 
 async function main(): Promise<void> {
-  const changedEachIteration = await runScenario("changed", [
-    { answer: "Iteration one answer", change: { path: "demo.txt", content: "v1\n" } },
-    { answer: "Iteration two answer", change: { path: "demo.txt", content: "v2\n" } },
-    { answer: "Iteration three answer", change: { path: "demo.txt", content: "v3\n" } },
-    { answer: "No further substantial changes" },
-  ]);
+  const restoreGlobalConfigPath = await installTempGlobalUltrathinkConfigPath("ultrathink-demo-config-");
 
-  if (changedEachIteration.stopReason !== "no-git-changes") {
-    throw new Error(`Expected no-git-changes for changed scenario, got ${changedEachIteration.stopReason}`);
+  setNamingTestOverrides({
+    async ensureNamingModel() {
+      return { provider: "ultrathink-demo", modelId: "metadata" };
+    },
+    async generateBranchSlug() {
+      return "demo-git-branching";
+    },
+    async generateIterationCommitMessage({ iteration, changedFiles }) {
+      return {
+        subject: `Demo iteration ${iteration} updates ${changedFiles[0] ?? "repo"}`,
+        body: `- Update ${changedFiles[0] ?? "the repository"}.\n- Keep Ultrathink moving toward a stable result.`,
+      };
+    },
+    async generateMergeCommitMessage({ scratchBranchName }) {
+      return {
+        subject: `Merge ${scratchBranchName}`,
+        body: "- Integrate the scratch-branch work.\n- Preserve the detailed side history while keeping the main branch readable.",
+      };
+    },
+  });
+
+  try {
+    const changedEachIteration = await runScenario("changed", [
+      { answer: "Iteration one answer", change: { path: "demo.txt", content: "v1\n" } },
+      { answer: "Iteration two answer", change: { path: "demo.txt", content: "v2\n" } },
+      { answer: "No further substantial changes" },
+    ]);
+
+    if (changedEachIteration.stopReason !== "no-git-changes") {
+      throw new Error(`Expected no-git-changes for changed scenario, got ${changedEachIteration.stopReason}`);
+    }
+
+    const unchangedFinalIteration = await runScenario("unchanged", [
+      { answer: "Iteration one answer", change: { path: "demo.txt", content: "v1\n" } },
+      { answer: "Iteration one answer" },
+    ]);
+
+    if (unchangedFinalIteration.stopReason !== "no-git-changes") {
+      throw new Error(`Expected no-git-changes for unchanged scenario, got ${unchangedFinalIteration.stopReason}`);
+    }
+
+    console.log("> pi-ultrathink demo");
+    console.log("command: /ultrathink Fix the task and keep improving until stable");
+    changedEachIteration.iterationSummaries.forEach((line) => console.log(line));
+    console.log(changedEachIteration.finalizationLine);
+    console.log(`stop reason: ${changedEachIteration.stopReason}`);
+    console.log("compare with: git log --oneline --decorate --graph");
+    changedEachIteration.gitLogLines.slice(0, 6).forEach((line) => console.log(`  ${line}`));
+    console.log("");
+    console.log("> pi-ultrathink demo");
+    console.log("command: /ultrathink Fix the task and keep improving until stable");
+    unchangedFinalIteration.iterationSummaries.forEach((line) => console.log(line));
+    console.log(unchangedFinalIteration.finalizationLine);
+    console.log(`stop reason: ${unchangedFinalIteration.stopReason}`);
+    console.log(`demo repo (changed scenario): ${changedEachIteration.cwd}`);
+    console.log(`demo repo (unchanged scenario): ${unchangedFinalIteration.cwd}`);
+  } finally {
+    restoreGlobalConfigPath();
+    setNamingTestOverrides(undefined);
   }
-
-  const unchangedFinalIteration = await runScenario("unchanged", [
-    { answer: "Iteration one answer", change: { path: "demo.txt", content: "v1\n" } },
-    { answer: "Iteration one answer" },
-  ]);
-
-  if (unchangedFinalIteration.stopReason !== "no-git-changes") {
-    throw new Error(`Expected no-git-changes for unchanged scenario, got ${unchangedFinalIteration.stopReason}`);
-  }
-
-  console.log("> pi-ultrathink demo");
-  console.log("command: /ultrathink Fix the task and keep improving until stable");
-  changedEachIteration.iterationSummaries.forEach((line) => console.log(line));
-  console.log(`stop reason: ${changedEachIteration.stopReason}`);
-  console.log("compare with: git log --oneline --decorate --graph");
-  changedEachIteration.gitLogLines.slice(0, 5).forEach((line) => console.log(`  ${line}`));
-  console.log("");
-  console.log("> pi-ultrathink demo");
-  console.log("command: /ultrathink Fix the task and keep improving until stable");
-  unchangedFinalIteration.iterationSummaries.forEach((line) => console.log(line));
-  console.log(`stop reason: ${unchangedFinalIteration.stopReason}`);
-  console.log(`demo repo (changed scenario): ${changedEachIteration.cwd}`);
-  console.log(`demo repo (unchanged scenario): ${unchangedFinalIteration.cwd}`);
 }
 
 main().catch((error) => {
+  setNamingTestOverrides(undefined);
   console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   process.exitCode = 1;
 });

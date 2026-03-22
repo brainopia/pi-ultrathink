@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { ActiveRun, IterationRecord, StopReason } from "./types.js";
+import type { ActiveRun, FinalizationResult, IterationRecord, StopReason } from "./types.js";
 import { sendCompletionMessage, setUltrathinkStatus } from "./ui.js";
 
 type AssistantLike = {
@@ -27,6 +27,7 @@ type SessionMessageEntryLike = {
 
 let configModulePromise: Promise<typeof import("./config.js")> | undefined;
 let gitModulePromise: Promise<typeof import("./git.js")> | undefined;
+let namingModulePromise: Promise<typeof import("./naming.js")> | undefined;
 let promptEditorModulePromise: Promise<typeof import("./promptEditor.js")> | undefined;
 let reviewModulePromise: Promise<typeof import("./review.js")> | undefined;
 let stateModulePromise: Promise<typeof import("./state.js")> | undefined;
@@ -37,6 +38,10 @@ function loadConfigModule(): Promise<typeof import("./config.js")> {
 
 function loadGitModule(): Promise<typeof import("./git.js")> {
   return (gitModulePromise ??= import("./git.js"));
+}
+
+function loadNamingModule(): Promise<typeof import("./naming.js")> {
+  return (namingModulePromise ??= import("./naming.js"));
 }
 
 function loadPromptEditorModule(): Promise<typeof import("./promptEditor.js")> {
@@ -93,12 +98,91 @@ function getLeafAssistantEntryId(ctx: ExtensionContext): string | undefined {
   return leaf.id;
 }
 
+function isNormalCompletion(stopReason: StopReason): boolean {
+  return stopReason === "no-git-changes" || stopReason === "max-iterations";
+}
+
+function createPreservedFinalization(run: ActiveRun, stopReason: StopReason): FinalizationResult {
+  return {
+    mode: "preserved",
+    success: false,
+    scratchBranchDeleted: false,
+    error: run.scratchBranchName
+      ? `Automatic reintegration was skipped because the run ended with ${stopReason}; scratch branch ${run.scratchBranchName} was preserved.`
+      : `Automatic reintegration was skipped because the run ended with ${stopReason}.`,
+  };
+}
+
 export default function ultrathinkExtension(pi: ExtensionAPI): void {
   let activeRun: ActiveRun | undefined;
 
   function clearRunState(ctx: ExtensionContext): void {
     activeRun = undefined;
     setUltrathinkStatus(ctx, undefined);
+  }
+
+  async function finalizeRunIfNeeded(ctx: ExtensionContext, run: ActiveRun, stopReason: StopReason): Promise<void> {
+    if (!run.originalBranchName || !run.scratchBranchName) {
+      return;
+    }
+
+    if (!isNormalCompletion(stopReason)) {
+      run.finalization = createPreservedFinalization(run, stopReason);
+      return;
+    }
+
+    try {
+      const gitModule = await loadGitModule();
+      const committedIterations = run.iterations.filter(
+        (iteration) => iteration.commitCreated && iteration.commitSha && iteration.commitSubject && iteration.commitBody,
+      );
+
+      let mergeCommitMessage:
+        | {
+            subject: string;
+            body: string;
+          }
+        | undefined;
+
+      if (committedIterations.length > 1 && run.namingModel && run.originalHeadSha) {
+        const namingModule = await loadNamingModule();
+        const branchDiff = await gitModule.describeCommitRange({
+          cwd: ctx.cwd,
+          exec: pi.exec,
+          fromRef: run.originalHeadSha,
+          toRef: run.scratchBranchName,
+        });
+        mergeCommitMessage = await namingModule.generateMergeCommitMessage({
+          ctx,
+          config: run.namingModel,
+          promptText: run.originalPromptText,
+          scratchBranchName: run.scratchBranchName,
+          commits: committedIterations.map((iteration) => ({
+            sha: iteration.commitSha!,
+            subject: iteration.commitSubject!,
+            body: iteration.commitBody!,
+          })),
+          diffSummary: branchDiff.diffSummary,
+        });
+      }
+
+      run.finalization = await gitModule.finalizeScratchBranchRun({
+        cwd: ctx.cwd,
+        exec: pi.exec,
+        originalBranchName: run.originalBranchName,
+        scratchBranchName: run.scratchBranchName,
+        iterationRecords: run.iterations,
+        mergeCommitMessage,
+        commitBodyMaxChars: run.commitBodyMaxChars,
+      });
+    } catch (error) {
+      run.finalization = {
+        mode: "preserved",
+        success: false,
+        scratchBranchDeleted: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   async function finishRun(ctx: ExtensionContext, stopReason: StopReason): Promise<void> {
@@ -110,12 +194,12 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       lastIteration.stopReason = stopReason;
     }
 
+    await finalizeRunIfNeeded(ctx, run, stopReason);
     const { persistStop } = await loadStateModule();
     persistStop(pi, run, stopReason);
     sendCompletionMessage(pi, { run, stopReason, iterations: run.iterations });
     clearRunState(ctx);
   }
-
 
   async function startRun(promptText: string, ctx: ExtensionCommandContext): Promise<void> {
     if (activeRun) {
@@ -128,13 +212,14 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     }
 
     const promptEditorPromise = ctx.hasUI ? loadPromptEditorModule() : undefined;
-    const [{ loadUltrathinkConfig }, { prepareGitRun }, { createActiveRun, createRunId, persistRunStart }] = await Promise.all([
+    const [{ loadUltrathinkConfig }, gitModule, namingModule, stateModule] = await Promise.all([
       loadConfigModule(),
       loadGitModule(),
+      loadNamingModule(),
       loadStateModule(),
     ]);
 
-    const config = await loadUltrathinkConfig(ctx.cwd);
+    const config = await loadUltrathinkConfig();
     const continuationPromptTemplate = promptEditorPromise
       ? await (await promptEditorPromise).promptForContinuationTemplate(ctx, config.continuationPromptTemplate)
       : config.continuationPromptTemplate;
@@ -143,35 +228,57 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       return;
     }
 
-    const runId = createRunId();
-    const gitSetup = await prepareGitRun({
-      cwd: ctx.cwd,
-      runId,
-      mode: config.git.mode,
-      allowDirty: config.git.allowDirty,
-      exec: pi.exec,
-    });
+    let namingModel;
+    try {
+      namingModel = await namingModule.ensureNamingModel(ctx, config);
+    } catch (error) {
+      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      return;
+    }
+    if (!namingModel) {
+      ctx.ui.notify("Ultrathink start cancelled.", "info");
+      return;
+    }
 
-    activeRun = createActiveRun({
+    const runId = stateModule.createRunId();
+    let gitSetup;
+    try {
+      gitSetup = await gitModule.prepareScratchBranchRun({
+        cwd: ctx.cwd,
+        exec: pi.exec,
+        generateBranchSlug: async (existingBranchNames) =>
+          await namingModule.generateBranchSlug({
+            ctx,
+            config: namingModel,
+            promptText,
+            existingBranchNames: existingBranchNames.filter((branchName) => branchName.startsWith("ultrathink/")),
+          }),
+      });
+    } catch (error) {
+      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      return;
+    }
+
+    activeRun = stateModule.createActiveRun({
       runId,
       promptText,
       config,
       continuationPromptTemplate,
+      namingModel,
+      originalHeadSha: gitSetup.originalHeadSha,
+      reviewBaseSha: gitSetup.originalHeadSha,
       originalBranchName: gitSetup.originalBranchName,
-      currentBranchName: gitSetup.currentBranchName,
-      commitsEnabled: gitSetup.commitsEnabled,
-      preflightGitFailure: gitSetup.failureReason,
-      reviewBaseSha: gitSetup.baseline?.head ?? undefined,
+      scratchBranchName: gitSetup.scratchBranchName,
     });
     activeRun.gitBaseline = gitSetup.baseline;
 
-    persistRunStart(pi, activeRun);
+    stateModule.persistRunStart(pi, activeRun);
     setUltrathinkStatus(ctx, activeRun);
     pi.sendUserMessage(promptText);
   }
 
   pi.registerCommand("ultrathink", {
-    description: "Run a prompt and continue only while each iteration still changes git-tracked work",
+    description: "Run a prompt in an Ultrathink scratch branch and continue only while each iteration still changes git-tracked work",
     handler: async (args, ctx) => {
       const promptText = args.trim();
       if (!promptText) {
@@ -227,57 +334,68 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     }
 
     const assistantText = getAssistantText(assistantMessage);
-    const [reviewModule, gitModule, stateModule] = await Promise.all([
+    const [reviewModule, gitModule, namingModule, stateModule] = await Promise.all([
       loadReviewModule(),
       loadGitModule(),
+      loadNamingModule(),
       loadStateModule(),
     ]);
     const { buildReviewPrompt, computeAnswerDigest, decideStop } = reviewModule;
-    const { NO_REPOSITORY_CHANGES_NOTE, captureGitSnapshot, commitIterationIfChanged } = gitModule;
+    const { NO_REPOSITORY_CHANGES_NOTE, captureGitSnapshot, commitPreparedIteration, prepareIterationCommit } = gitModule;
     const { persistIteration } = stateModule;
     const answerDigest = computeAnswerDigest(assistantText);
     const previousDigest = run.previousDigest;
     run.iteration += 1;
 
-    if (previousDigest === answerDigest) {
-      run.stableRepeats += 1;
-    } else {
-      run.stableRepeats = 0;
-    }
     run.previousDigest = answerDigest;
 
     let commitCreated = false;
     let commitSha: string | undefined;
     let commitParentSha: string | undefined;
+    let commitSubject: string | undefined;
+    let commitBody: string | undefined;
     let commitNote: string | undefined;
     let stopReason: StopReason | null = null;
 
-    if (run.preflightGitFailure) {
-      commitNote = run.preflightGitFailure;
-      stopReason = "git-error";
-    } else if (!run.commitsEnabled) {
-      commitNote = "git-backed iteration tracking was unavailable for this run";
-      stopReason = "git-error";
-    } else {
-      try {
-        const commitResult = await commitIterationIfChanged({
-          cwd: ctx.cwd,
-          runId: run.runId,
+    try {
+      const pendingCommit = await prepareIterationCommit({
+        cwd: ctx.cwd,
+        exec: pi.exec,
+      });
+
+      if (!pendingCommit.readyToCommit) {
+        commitNote = pendingCommit.noCommitReason;
+      } else if (!run.namingModel) {
+        commitNote = "Ultrathink naming model was unavailable during commit creation";
+        stopReason = "git-error";
+      } else {
+        const generatedCommit = await namingModule.generateIterationCommitMessage({
+          ctx,
+          config: run.namingModel,
+          promptText: run.originalPromptText,
           iteration: run.iteration,
           assistantOutput: assistantText,
-          mode: run.gitMode,
+          diffSummary: pendingCommit.diffSummary,
+          changedFiles: pendingCommit.changedFiles,
+        });
+        const commitResult = await commitPreparedIteration({
+          cwd: ctx.cwd,
+          subject: generatedCommit.subject,
+          body: generatedCommit.body,
           commitBodyMaxChars: run.commitBodyMaxChars,
           exec: pi.exec,
         });
         commitCreated = commitResult.commitCreated;
         commitSha = commitResult.commitSha;
         commitParentSha = commitResult.commitParentSha;
+        commitSubject = commitResult.commitSubject;
+        commitBody = commitResult.commitBody;
         commitNote = commitResult.noCommitReason;
         run.gitBaseline = await captureGitSnapshot(pi.exec, ctx.cwd);
-      } catch (error) {
-        commitNote = error instanceof Error ? error.message : String(error);
-        stopReason = "git-error";
       }
+    } catch (error) {
+      commitNote = error instanceof Error ? error.message : String(error);
+      stopReason = "git-error";
     }
 
     if (!stopReason) {
@@ -297,10 +415,11 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       label: `v${run.iteration}`,
       answerDigest,
       previousDigest,
-      stableRepeats: run.stableRepeats,
       commitCreated,
       commitSha,
       commitParentSha,
+      commitSubject,
+      commitBody,
       commitNote,
       stopReason: stopReason ?? undefined,
     };
