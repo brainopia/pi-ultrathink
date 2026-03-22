@@ -1,6 +1,6 @@
 {
   "name": "@brain0pia/pi-ultrathink",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "Pi extension for /ultrathink review loops with conditional git commits",
   "license": "MIT",
   "repository": {
@@ -28,10 +28,16 @@
     "check": "npm run typecheck && npm run test"
   },
   "peerDependencies": {
-    "@sinclair/typebox": "*"
+    "@sinclair/typebox": "*",
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
   },
   "devDependencies": {
     "@sinclair/typebox": "^0.34.41",
+    "@mariozechner/pi-ai": "^0.57.1",
+    "@mariozechner/pi-coding-agent": "^0.57.1",
+    "@mariozechner/pi-tui": "^0.57.1",
     "@types/node": "^24.3.0",
     "tsx": "^4.20.5",
     "typescript": "^5.7.3",
@@ -44,9 +50,5 @@
   },
   "publishConfig": {
     "access": "public"
-  },
-  "dependencies": {
-    "@mariozechner/pi-ai": "^0.57.1",
-    "@mariozechner/pi-coding-agent": "^0.57.1"
   }
 }

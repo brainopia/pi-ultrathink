@@ -5,6 +5,7 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import type { Model } from "@mariozechner/pi-ai";
 
 export interface RecordedUserMessage {
   content: string | Array<{ type: string; text?: string }>;
@@ -25,17 +26,65 @@ type Handler = (event: any, ctx: ExtensionContext) => any;
 type CommandHandler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 type ShortcutHandler = (ctx: ExtensionContext) => Promise<void> | void;
 
+type FakeModel = Model<any>;
+
+const DEFAULT_FAKE_MODEL: FakeModel = {
+  provider: "test",
+  id: "nano",
+  api: "openai-completions",
+  name: "Test Nano",
+  baseUrl: "https://test.invalid",
+  reasoning: false,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 128_000,
+  maxTokens: 4_096,
+};
+
+class FakeModelRegistry {
+  readonly models: FakeModel[];
+  private readonly apiKeys = new Map<string, string>();
+
+  constructor(models?: FakeModel[]) {
+    this.models = models && models.length > 0 ? models : [DEFAULT_FAKE_MODEL];
+    for (const model of this.models) {
+      this.apiKeys.set(`${model.provider}/${model.id}`, `${model.provider}-${model.id}-key`);
+    }
+  }
+
+  getAll(): FakeModel[] {
+    return [...this.models];
+  }
+
+  getAvailable(): FakeModel[] {
+    return [...this.models];
+  }
+
+  find(provider: string, modelId: string): FakeModel | undefined {
+    return this.models.find((model) => model.provider === provider && model.id === modelId);
+  }
+
+  async getApiKey(model: FakeModel): Promise<string | undefined> {
+    return this.apiKeys.get(`${model.provider}/${model.id}`);
+  }
+
+  async getApiKeyForProvider(provider: string): Promise<string | undefined> {
+    const match = this.models.find((model) => model.provider === provider);
+    return match ? this.apiKeys.get(`${match.provider}/${match.id}`) : undefined;
+  }
+}
+
 class FakeUI {
   readonly notifications: Array<{ message: string; type?: string }> = [];
   readonly statuses = new Map<string, string | undefined>();
   readonly customResults: unknown[] = [];
+  readonly selectResults: Array<string | undefined> = [];
 
-  notify(message: string, type?: "info" | "warning" | "error"): void {
-    this.notifications.push({ message, type });
-  }
-
-  select(): Promise<string | undefined> {
-    return Promise.resolve(undefined);
+  async select(_title: string, options: string[]): Promise<string | undefined> {
+    if (this.selectResults.length > 0) {
+      return this.selectResults.shift();
+    }
+    return options[0];
   }
 
   confirm(): Promise<boolean> {
@@ -44,6 +93,10 @@ class FakeUI {
 
   input(): Promise<string | undefined> {
     return Promise.resolve(undefined);
+  }
+
+  notify(message: string, type?: "info" | "warning" | "error"): void {
+    this.notifications.push({ message, type });
   }
 
   editor(): Promise<string | undefined> {
@@ -111,6 +164,7 @@ export class FakePiEnvironment {
   constructor(
     readonly cwd: string,
     readonly execImpl: (command: string, args: string[], options?: ExecOptions) => Promise<ExecResult>,
+    readonly modelRegistryImpl: FakeModelRegistry,
   ) {}
 
   readonly api: ExtensionAPI = {
@@ -173,6 +227,10 @@ export class FakePiEnvironment {
     this.ui.customResults.push(result);
   }
 
+  queueSelectResult(result: string | undefined): void {
+    this.ui.selectResults.push(result);
+  }
+
   private createBaseContext(): ExtensionContext {
     return {
       ui: this.ui as ExtensionContext["ui"],
@@ -182,8 +240,8 @@ export class FakePiEnvironment {
         getLeafEntry: () => this.leafEntry,
         getEntries: () => this.sessionEntries,
       } as ExtensionContext["sessionManager"],
-      modelRegistry: {} as ExtensionContext["modelRegistry"],
-      model: undefined,
+      modelRegistry: this.modelRegistryImpl as unknown as ExtensionContext["modelRegistry"],
+      model: this.modelRegistryImpl.getAvailable()[0],
       isIdle: () => this.idle,
       abort: () => {
         this.aborted += 1;
@@ -252,9 +310,10 @@ export class FakePiEnvironment {
 export function createFakePiEnvironment(args: {
   cwd: string;
   execImpl?: (command: string, args: string[], options?: ExecOptions) => Promise<ExecResult>;
+  models?: FakeModel[];
 }): FakePiEnvironment {
   const execImpl =
     args.execImpl ??
     (async () => ({ stdout: "", stderr: "", code: 0, killed: false } as ExecResult));
-  return new FakePiEnvironment(args.cwd, execImpl);
+  return new FakePiEnvironment(args.cwd, execImpl, new FakeModelRegistry(args.models));
 }

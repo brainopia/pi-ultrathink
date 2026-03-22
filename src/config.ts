@@ -1,16 +1,17 @@
-import { access, readFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CONTINUATION_PROMPT_TEMPLATE } from "./promptTemplate.js";
-import type { UltrathinkConfig } from "./types.js";
+import type { NamingModelConfig, UltrathinkConfig } from "./types.js";
 
-export const ULTRATHINK_CONFIG_PATH = path.join(".pi", "ultrathink.json");
+export const ULTRATHINK_CONFIG_DISPLAY_PATH = "~/.pi/ultrathink.json";
+export const ULTRATHINK_CONFIG_PATH_ENV = "PI_ULTRATHINK_CONFIG_PATH";
 
 export const DEFAULT_CONFIG: UltrathinkConfig = {
   maxIterations: 4,
   continuationPromptTemplate: DEFAULT_CONTINUATION_PROMPT_TEMPLATE,
   commitBodyMaxChars: 4000,
   git: {
-    mode: "current-branch",
     allowDirty: false,
   },
 };
@@ -38,25 +39,55 @@ function parseBoolean(value: unknown, field: string): boolean {
   return value;
 }
 
-function parseGitMode(value: unknown): UltrathinkConfig["git"]["mode"] {
-  if (value === "current-branch" || value === "scratch-branch" || value === "off") {
-    return value;
+
+function parseNamingModel(value: unknown): NamingModelConfig {
+  if (!isObject(value)) {
+    throw new Error("naming must be a JSON object when provided.");
   }
-  throw new Error('git.mode must be "current-branch", "scratch-branch", or "off".');
+
+  if (typeof value.provider !== "string" || value.provider.trim() === "") {
+    throw new Error("naming.provider must be a non-empty string.");
+  }
+
+  if (typeof value.modelId !== "string" || value.modelId.trim() === "") {
+    throw new Error("naming.modelId must be a non-empty string.");
+  }
+
+  return {
+    provider: value.provider.trim(),
+    modelId: value.modelId.trim(),
+  };
 }
 
-export async function loadUltrathinkConfig(cwd: string): Promise<UltrathinkConfig> {
-  const configPath = path.join(cwd, ULTRATHINK_CONFIG_PATH);
+export function getUltrathinkConfigPath(): string {
+  const override = process.env[ULTRATHINK_CONFIG_PATH_ENV]?.trim();
+  if (override) {
+    return path.resolve(override);
+  }
+  return path.join(os.homedir(), ".pi", "ultrathink.json");
+}
+
+async function readRawConfig(): Promise<Record<string, unknown> | undefined> {
+  const configPath = getUltrathinkConfigPath();
   try {
     await access(configPath);
   } catch {
-    return structuredClone(DEFAULT_CONFIG);
+    return undefined;
   }
 
   const raw = await readFile(configPath, "utf8");
   const parsed = JSON.parse(raw) as unknown;
   if (!isObject(parsed)) {
-    throw new Error(`${ULTRATHINK_CONFIG_PATH} must contain a JSON object.`);
+    throw new Error(`${ULTRATHINK_CONFIG_DISPLAY_PATH} must contain a JSON object.`);
+  }
+
+  return parsed;
+}
+
+export async function loadUltrathinkConfig(): Promise<UltrathinkConfig> {
+  const parsed = await readRawConfig();
+  if (!parsed) {
+    return structuredClone(DEFAULT_CONFIG);
   }
 
   const gitInput = parsed.git;
@@ -81,12 +112,24 @@ export async function loadUltrathinkConfig(cwd: string): Promise<UltrathinkConfi
       parsed.commitBodyMaxChars === undefined
         ? DEFAULT_CONFIG.commitBodyMaxChars
         : parseOptionalPositiveInteger(parsed.commitBodyMaxChars, "commitBodyMaxChars"),
+    naming: parsed.naming === undefined ? undefined : parseNamingModel(parsed.naming),
     git: {
-      mode: gitInput?.mode === undefined ? DEFAULT_CONFIG.git.mode : parseGitMode(gitInput.mode),
       allowDirty:
         gitInput?.allowDirty === undefined
           ? DEFAULT_CONFIG.git.allowDirty
           : parseBoolean(gitInput.allowDirty, "git.allowDirty"),
     },
   };
+}
+
+export async function saveUltrathinkNamingConfig(naming: NamingModelConfig): Promise<void> {
+  const configPath = getUltrathinkConfigPath();
+  const raw = (await readRawConfig()) ?? {};
+  raw.naming = {
+    provider: naming.provider,
+    modelId: naming.modelId,
+  };
+
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
 }

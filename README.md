@@ -1,153 +1,208 @@
 <div align="center">
   <h1>🧠 pi-ultrathink</h1>
-  <p><b>An autonomous, multi-pass reasoning loop for Pi</b></p>
+  <p><b>A git-driven multi-pass review loop for Pi that works on a temporary branch</b></p>
 </div>
 
-`pi-ultrathink` is a [Pi](https://github.com/mariozechner/pi-coding-agent) extension that gives your agent the ability to reflect, verify, and iteratively improve its work before handing it back to you.
+`pi-ultrathink` is a [Pi](https://github.com/mariozechner/pi-coding-agent) extension that adds `/ultrathink <prompt>`.
 
-By adding a simple `/ultrathink` command, it transforms single-shot generations into a structured, multi-pass reasoning loop driven by real Git changes.
+It turns one prompt into a visible review loop that keeps going only while the repository still changes. Every run happens on a dedicated `ultrathink/<slug>` branch, every changed iteration gets its own commit, and the finished work is reintegrated back into the original branch automatically.
 
-## 🚀 Why use Ultrathink?
+## Why use Ultrathink?
 
-Standard LLM interactions are one-and-done. But complex software engineering tasks—like heavy refactors, tricky bug fixes, or architecture shifts—often require multiple passes:
+Complex coding tasks often need more than one pass. The model writes code, reviews what changed, fixes issues, checks again, and stops only when another pass no longer changes the repo.
 
-Think of `pi-ultrathink` as manually dialing up the `thinking_budget` or `reasoning_effort` of a model—but specifically focused on double-checking and self-correction. Just like humans produce better code when they review their own work or take a second look, models significantly improve when forced into an explicit verification pass. 
+Ultrathink makes that process explicit and inspectable:
 
-But it doesn't stop at just "check your work." Because you can edit the **review prompt** before the loop starts, you can use `ultrathink` to encourage the model to keep trying until it makes progress on a specific metric—like getting a test suite to pass or satisfying a particular evaluation script.
+- the initial task is still a normal visible user message
+- follow-up review prompts are also visible user messages
+- each changed pass becomes a git commit on a temporary branch
+- the final summary prints the branch outcome plus every scratch-branch commit title and description
 
-1. Draft the initial implementation
-2. Review the changes against the original goal
-3. Fix edge cases or missed requirements
-4. Verify the final state
-
-`pi-ultrathink` automates this entire process.
-
-## 🔄 How the Loop Works
+## How the loop works
 
 ```mermaid
 flowchart TD
-    Start([User: /ultrathink Fix the task]) --> Prompt[TUI Auto-Review Prompt Editor]
-    Prompt -->|Accept/Edit| V1[Agent Pass 1: Initial Implementation]
+    Start([User: /ultrathink Fix the task]) --> Prompt[TUI review-prompt editor]
+    Prompt -->|Accept| Naming[Pick naming model first time only]
     Prompt -->|Cancel| End([Abort])
-    
-    V1 --> CheckGit1{Did Git change?}
-    CheckGit1 -->|Yes| Commit1[Create Git Commit v1]
-    CheckGit1 -->|No| Done([Done: No changes needed])
-    
-    Commit1 --> Review1[Auto-Review Prompt: Diff + Instructions]
-    Review1 --> V2[Agent Pass 2: Refinement]
-    
-    V2 --> CheckGit2{Did Git change?}
-    CheckGit2 -->|Yes| Commit2[Create Git Commit v2]
-    CheckGit2 -->|No| Done
-    
-    Commit2 --> ReviewN[Auto-Review... until max iterations or stable]
+    Naming --> Branch[Create ultrathink/ai-slug branch]
+    Branch --> V1[Agent pass 1]
+    V1 --> Git1{Repo changed?}
+    Git1 -->|No| Finish0[Delete empty scratch branch]
+    Git1 -->|Yes| Commit1[AI-authored commit message]
+    Commit1 --> Review1[Visible review prompt]
+    Review1 --> V2[Agent pass 2]
+    V2 --> GitN{Repo changed?}
+    GitN -->|Yes| CommitN[Another AI-authored commit]
+    GitN -->|No| Finalize[Reintegrate into original branch]
+    CommitN --> Review1
+    Finalize --> One{How many scratch commits?}
+    One -->|1| Rebase[Rebase + fast-forward]
+    One -->|2+| Merge[AI-authored merge commit]
 ```
 
-## 🛠️ Usage
+## Usage
 
-Inside Pi, simply prefix your task with `/ultrathink`:
+Inside Pi:
 
 ```text
 /ultrathink Migrate the database schema to v4 and update all queries
 ```
 
-### The Interactive Review Prompt
+### First run: choose a small naming model
 
-Before the agent starts, a TUI overlay appears. This lets you inspect and modify the **Review Instructions** that will be fed to the agent on subsequent passes.
+The first time you run Ultrathink, it checks `~/.pi/ultrathink.json` for a configured naming model.
 
-The prompt is pre-filled with instructions telling the agent to look at the `git diff` of its previous pass and continue *only* if substantial improvements are needed.
+If none is set, Ultrathink shows a selector built from Pi’s available models. The selected model is saved to `~/.pi/ultrathink.json` and reused later.
 
-- Press **Enter** to accept and start the loop.
-- **Edit** the text to add specific review criteria (e.g., "Make sure to check for memory leaks").
-- Press **Esc** to cancel.
+That small model is used only for:
 
-### The Conversation Flow
+- scratch-branch slug generation
+- per-iteration commit title/body generation
+- final merge-commit title/body generation when the scratch branch has multiple commits
 
-The loop unfolds transparently in your chat history. Every pass is visible, and you can see exactly how the agent evaluated its own work:
+### Review prompt editor
+
+Before the loop starts, Pi opens the continuation-prompt editor. Ultrathink automatically prepends:
+
+- the original task
+- a git diff command based on the run’s baseline commit
+
+You only edit the review instructions that come after that fixed header.
+
+### Conversation flow
+
+The loop stays visible in chat history:
 
 ```text
-user: /ultrathink Migrate the database schema...
-assistant: [v1] <initial implementation>
-user: [Auto] Original task: Migrate...
-      Review the current repository changes with: git diff <startSha> HEAD
-      Continue working only if...
-assistant: [v2] <fixes missed foreign key constraints>
-user: [Auto] ...
-assistant: [v3] <no changes needed, all good>
+user: /ultrathink Fix the task
+assistant: [v1] initial implementation
+user: Original task: Fix the task
+      Review the current repository changes with:
+      git diff <baselineSha> HEAD
+assistant: [v2] refinement
+user: Original task: Fix the task
+      ...
+assistant: [v3] no further substantial changes
+custom: Ultrathink summary ...
 ```
 
-## 🛑 When does the loop stop?
+## Git behavior
 
-The loop is completely **Git-driven**. 
+Ultrathink now always uses a temporary branch, but its own config lives globally in `~/.pi/ultrathink.json` instead of inside each repository.
 
-1. **Stable State (No Changes):** If a pass results in zero changes to the Git repository, the agent has effectively said "I'm done." The loop stops immediately.
-2. **Iteration Cap:** A safety limit (`maxIterations`, default 4) prevents infinite loops.
-3. **User Cancellation:** Interrupting the active agent turn (`Escape` by default) or typing a new prompt immediately halts the loop.
+### Scratch branch naming
 
-## 💾 Git Checkpoints
+Each run starts on a branch named:
 
-Every successful pass that alters the codebase automatically generates a Git commit:
-
-`ultrathink(<runId>): v1`
-
-This provides a granular undo history. You can easily roll back to a specific iteration if the agent went down the wrong path in a later pass:
-
-```bash
-git log --oneline --graph
+```text
+ultrathink/<ai-generated-slug>
 ```
 
-## 🔮 Roadmap / Future Ideas
+There is no run-id suffix in the branch name. If the generated name already exists, Ultrathink asks the naming model for another slug.
 
-- **Context Management Modes:**
-  - `clean mode`: Complete context reset between iterations to prevent the model from getting stuck in a rut.
-  - `careful mode`: Context reset triggered automatically when the conversation hits a specific token percentage threshold.
-- **Improved VS Code Copilot Support:** Run all iterations within a single request by leveraging the `ask_user` tool to integrate the auto-review seamlessly.
-- **Oracle Model Support:** Allow a distinct, separate model (e.g., a larger or specialized reasoning model) to conduct the auto-review instead of the model that wrote the code.
+### Iteration commits
 
-## 📦 Installation
+When an assistant pass changes the repository, Ultrathink creates a commit on the scratch branch.
 
-**Install from npm:**
-```bash
-pi install @brain0pia/pi-ultrathink
-```
+The title and body are generated by the configured naming model from:
 
-**Quick try (without installation):**
-```bash
-pi -e npm:@brain0pia/pi-ultrathink
-```
+- the original prompt
+- the changed files
+- a diff summary
+- the assistant’s output for that iteration
 
+If an assistant pass leaves the repo unchanged, no commit is created and the loop stops.
 
-## ⚙️ Configuration
+### Reintegration into the original branch
 
-You can customize the behavior by creating `.pi/ultrathink.json` in your project root:
+When the run ends normally:
+
+- **0 scratch commits** → switch back and delete the scratch branch
+- **1 scratch commit** → rebase the scratch branch onto the original branch, then fast-forward the original branch
+- **2+ scratch commits** → merge back with one final AI-authored merge commit
+
+On successful reintegration, the `ultrathink/...` branch is deleted.
+
+If the final rebase or merge conflicts, Ultrathink aborts the operation, preserves the scratch branch, and tells you to resolve it manually.
+
+## When does the loop stop?
+
+Ultrathink stops when one of these happens:
+
+1. **No git changes** — the latest pass did not change the repo
+2. **Iteration cap** — `maxIterations` was reached
+3. **User cancellation** — the user sends another prompt
+4. **Interrupt cancellation** — the active assistant turn is aborted
+5. **Git or metadata failure** — branch/commit/finalization automation fails
+
+Only normal completions (`no-git-changes`, `max-iterations`) attempt automatic reintegration into the original branch.
+
+## Final summary
+
+At the end of the run, Ultrathink sends a visible summary message that includes:
+
+- original branch
+- scratch branch
+- naming model
+- reintegration result
+- whether the scratch branch was deleted
+- every scratch-branch commit with SHA, title, and description
+- the final merge commit, if one was created
+
+This summary doubles as a work log.
+
+## Configuration
+
+Create `~/.pi/ultrathink.json`: 
 
 ```json
 {
   "maxIterations": 4,
   "continuationPromptTemplate": "Optional custom review prompt body appended after the fixed task/diff header",
   "commitBodyMaxChars": 4000,
+  "naming": {
+    "provider": "openai",
+    "modelId": "gpt-4.1-mini"
+  },
   "git": {
-    "mode": "current-branch",
     "allowDirty": false
   }
 }
 ```
 
-### Configuration Options:
+### Options
 
-- `maxIterations`: Maximum number of refinement passes.
-- `continuationPromptTemplate`: Default text for the review TUI.
-- `commitBodyMaxChars`: Truncation limit for the agent's summary in the Git commit.
-- `git.mode`: 
-  - `current-branch` (Default): Commits directly to your active branch.
-  - `scratch-branch`: Creates a temporary branch for the loop.
-  - `off`: Disables auto-committing entirely.
-- `git.allowDirty`: If false, prevents the loop from starting if you have uncommitted changes.
+- `maxIterations`: maximum number of assistant iterations
+- `continuationPromptTemplate`: default text shown in the review-prompt editor
+- `commitBodyMaxChars`: truncation limit for generated commit bodies
+- `naming.provider`: provider id for the small naming model
+- `naming.modelId`: model id for the small naming model
+- `git.allowDirty`: currently kept for backward compatibility, but Ultrathink expects a clean repo before it starts
 
-## 💻 Development
+## Installation
 
-Install dependencies and run the checks:
+Install from npm:
+
+```bash
+pi install @brain0pia/pi-ultrathink
+```
+
+Quick try without installation:
+
+```bash
+pi -e npm:@brain0pia/pi-ultrathink
+```
+
+Local development load:
+
+```bash
+pi -e ./src/index.ts
+```
+
+## Development
+
+Install dependencies and run checks:
 
 ```bash
 npm install
@@ -160,4 +215,4 @@ Run the deterministic SDK demo:
 npm run demo
 ```
 
-The demo uses a fake provider and temporary git repositories, so it does not require real model credentials.
+The demo uses a scripted provider and does not require real model credentials.

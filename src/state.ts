@@ -1,5 +1,12 @@
+import type {
+  ActiveRun,
+  IterationRecord,
+  NamingModelConfig,
+  StopReason,
+  UltrathinkConfig,
+  UltrathinkStateEntry,
+} from "./types.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { ActiveRun, IterationRecord, StopReason, UltrathinkConfig, UltrathinkStateEntry } from "./types.js";
 
 const CUSTOM_ENTRY_TYPE = "ultrathink-state";
 
@@ -26,28 +33,26 @@ export function createActiveRun(args: {
   promptText: string;
   config: UltrathinkConfig;
   continuationPromptTemplate: string;
+  namingModel: NamingModelConfig;
   reviewBaseSha?: string;
+  originalHeadSha?: string;
   originalBranchName?: string;
-  currentBranchName?: string;
-  commitsEnabled: boolean;
-  preflightGitFailure?: string;
+  scratchBranchName?: string;
 }): ActiveRun {
   return {
     runId: args.runId,
     originalPromptText: args.promptText,
     iteration: 0,
     maxIterations: args.config.maxIterations,
-    stableRepeats: 0,
+    originalHeadSha: args.originalHeadSha,
     originalBranchName: args.originalBranchName,
-    currentBranchName: args.currentBranchName,
-    gitMode: args.config.git.mode,
-    commitsEnabled: args.commitsEnabled,
+    scratchBranchName: args.scratchBranchName,
+    namingModel: args.namingModel,
     awaitingExtensionFollowUp: false,
     expectedPromptText: args.promptText,
     reviewBaseSha: args.reviewBaseSha,
     continuationPromptTemplate: args.continuationPromptTemplate,
     commitBodyMaxChars: args.config.commitBodyMaxChars,
-    preflightGitFailure: args.preflightGitFailure,
     iterations: [],
     startedAt: new Date().toISOString(),
   };
@@ -60,9 +65,11 @@ export function persistRunStart(pi: ExtensionAPI, run: ActiveRun): void {
     promptText: run.originalPromptText,
     startedAt: run.startedAt,
     reviewBaseSha: run.reviewBaseSha,
+    originalHeadSha: run.originalHeadSha,
     continuationPromptTemplate: run.continuationPromptTemplate,
     originalBranchName: run.originalBranchName,
-    currentBranchName: run.currentBranchName,
+    scratchBranchName: run.scratchBranchName,
+    namingModel: run.namingModel,
   };
   pi.appendEntry(CUSTOM_ENTRY_TYPE, entry);
 }
@@ -75,10 +82,11 @@ export function persistIteration(pi: ExtensionAPI, run: ActiveRun, record: Itera
     label: record.label,
     answerDigest: record.answerDigest,
     previousDigest: record.previousDigest,
-    stableRepeats: record.stableRepeats,
     commitCreated: record.commitCreated,
     commitSha: record.commitSha,
     commitParentSha: record.commitParentSha,
+    commitSubject: record.commitSubject,
+    commitBody: record.commitBody,
     commitNote: record.commitNote,
     stopReason: record.stopReason,
   };
@@ -91,10 +99,13 @@ export function persistStop(pi: ExtensionAPI, run: ActiveRun, stopReason: StopRe
     runId: run.runId,
     stopReason,
     reviewBaseSha: run.reviewBaseSha,
+    originalHeadSha: run.originalHeadSha,
     iteration: run.iteration,
     continuationPromptTemplate: run.continuationPromptTemplate,
     originalBranchName: run.originalBranchName,
-    currentBranchName: run.currentBranchName,
+    scratchBranchName: run.scratchBranchName,
+    namingModel: run.namingModel,
+    finalization: run.finalization,
   };
   pi.appendEntry(CUSTOM_ENTRY_TYPE, entry);
 }

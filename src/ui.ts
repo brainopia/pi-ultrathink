@@ -1,5 +1,5 @@
+import type { ActiveRun, FinalizationResult, IterationRecord, StopReason } from "./types.js";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { ActiveRun, IterationRecord, StopReason } from "./types.js";
 
 function describeStopReason(stopReason: StopReason): string {
   switch (stopReason) {
@@ -16,6 +16,39 @@ function describeStopReason(stopReason: StopReason): string {
   }
 }
 
+function describeFinalization(run: ActiveRun, finalization?: FinalizationResult): string {
+  if (!finalization) {
+    return run.scratchBranchName
+      ? `Reintegration: not attempted; scratch branch ${run.scratchBranchName} was preserved.`
+      : "Reintegration: not attempted.";
+  }
+
+  switch (finalization.mode) {
+    case "cleanup":
+      return `Reintegration: no iteration commits were created; returned to ${run.originalBranchName ?? "the original branch"} and deleted ${run.scratchBranchName ?? "the scratch branch"}.`;
+    case "rebase-fast-forward":
+      return `Reintegration: rebased ${run.scratchBranchName ?? "the scratch branch"} and fast-forwarded ${run.originalBranchName ?? "the original branch"}.`;
+    case "merge-commit":
+      return `Reintegration: merged ${run.scratchBranchName ?? "the scratch branch"} back into ${run.originalBranchName ?? "the original branch"} with a final merge commit.`;
+    case "preserved":
+      return finalization.error
+        ? `Reintegration: failed; preserved ${run.scratchBranchName ?? "the scratch branch"} for manual resolution. ${finalization.error}`
+        : `Reintegration: not attempted; preserved ${run.scratchBranchName ?? "the scratch branch"}.`;
+    case "none":
+      return `Reintegration: not attempted; scratch branch ${run.scratchBranchName ?? "(unknown)"} was preserved.`;
+  }
+}
+
+function formatBodyLines(body: string | undefined): string[] {
+  if (!body) return [];
+  return body.split("\n").map((line) => `  ${line}`);
+}
+
+function formatScratchCommit(iteration: IterationRecord): string[] {
+  const firstLine = `- ${iteration.commitSha ?? "(no sha)"} ${iteration.commitSubject ?? iteration.label}`;
+  return [firstLine, ...formatBodyLines(iteration.commitBody)];
+}
+
 export function setUltrathinkStatus(ctx: ExtensionContext, run?: ActiveRun): void {
   if (!run) {
     ctx.ui.setStatus("ultrathink", undefined);
@@ -23,7 +56,8 @@ export function setUltrathinkStatus(ctx: ExtensionContext, run?: ActiveRun): voi
   }
 
   const nextIteration = Math.min(run.iteration + 1, run.maxIterations);
-  ctx.ui.setStatus("ultrathink", `🧠 ultrathink v${nextIteration}/${run.maxIterations}`);
+  const branch = run.scratchBranchName ? ` • ${run.scratchBranchName}` : "";
+  ctx.ui.setStatus("ultrathink", `🧠 ultrathink v${nextIteration}/${run.maxIterations}${branch}`);
 }
 
 export function sendCompletionMessage(
@@ -34,36 +68,36 @@ export function sendCompletionMessage(
     iterations: IterationRecord[];
   },
 ): void {
-  const iterationLines =
-    args.iterations.length === 0
-      ? ["- no completed assistant iteration was recorded"]
-      : args.iterations.map((iteration) => {
-          if (iteration.commitCreated && iteration.commitSha) {
-            return `- ${iteration.label}: commit ${iteration.commitSha}`;
-          }
-          if (iteration.commitNote) {
-            return `- ${iteration.label}: ${iteration.commitNote}`;
-          }
-          return `- ${iteration.label}: no repository changes, no commit`;
-        });
+  const scratchCommits = args.iterations.filter((iteration) => iteration.commitCreated);
+  const lines = [
+    `Ultrathink run ${args.run.runId} finished because ${describeStopReason(args.stopReason)}.`,
+    args.run.originalBranchName ? `Original branch: ${args.run.originalBranchName}` : "",
+    args.run.scratchBranchName ? `Scratch branch: ${args.run.scratchBranchName}` : "",
+    args.run.namingModel ? `Naming model: ${args.run.namingModel.provider}/${args.run.namingModel.modelId}` : "",
+    describeFinalization(args.run, args.run.finalization),
+    `Scratch branch deleted: ${args.run.finalization?.scratchBranchDeleted ? "yes" : "no"}`,
+  ].filter(Boolean);
 
-  const branchSummary =
-    args.run.gitMode === "scratch-branch" && args.run.currentBranchName
-      ? `\nScratch branch: ${args.run.currentBranchName}${args.run.originalBranchName ? ` (from ${args.run.originalBranchName})` : ""}`
-      : "";
+  lines.push("Scratch branch commits:");
+  if (scratchCommits.length === 0) {
+    lines.push("- none");
+  } else {
+    for (const iteration of scratchCommits) {
+      lines.push(...formatScratchCommit(iteration));
+    }
+  }
+
+  if (args.run.finalization?.mergeCommitSha || args.run.finalization?.mergeCommitSubject || args.run.finalization?.mergeCommitBody) {
+    lines.push("Final merge commit:");
+    lines.push(`- ${args.run.finalization.mergeCommitSha ?? "(no sha)"} ${args.run.finalization.mergeCommitSubject ?? "(no subject)"}`);
+    lines.push(...formatBodyLines(args.run.finalization.mergeCommitBody));
+  }
 
   pi.sendMessage(
     {
       customType: "ultrathink-summary",
       display: true,
-      content: [
-        `Ultrathink run ${args.run.runId} finished because ${describeStopReason(args.stopReason)}.`,
-        branchSummary.trim(),
-        "Iterations:",
-        ...iterationLines,
-      ]
-        .filter(Boolean)
-        .join("\n"),
+      content: lines.join("\n"),
     },
     { triggerTurn: false },
   );

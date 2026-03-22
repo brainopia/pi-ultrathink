@@ -1,3 +1,7 @@
+> **⚠️ ARCHIVED** — This plan describes the original v1 design. It has been superseded by [`ultrathink-ai-branch-merge-flow.md`](./ultrathink-ai-branch-merge-flow.md) which implements the current scratch-branch-only workflow with AI-authored commit messages and automatic reintegration. The interfaces, git modes, stop reasons, and event handling described below no longer match the shipped code. Refer to the current source in `src/` and the new plan for the actual implementation.
+
+---
+
 # Build a Pi extension that runs `/ultrathink <prompt>` review loops with conditional git commits for changed iterations
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.

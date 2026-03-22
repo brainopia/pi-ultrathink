@@ -1,11 +1,17 @@
-export type GitMode = "current-branch" | "scratch-branch" | "off";
-
+export interface NamingModelConfig {
+  provider: string;
+  modelId: string;
+}
+export interface GeneratedCommitMessage {
+  subject: string;
+  body: string;
+}
 export interface UltrathinkConfig {
   maxIterations: number;
   continuationPromptTemplate: string;
   commitBodyMaxChars?: number;
+  naming?: NamingModelConfig;
   git: {
-    mode: GitMode;
     allowDirty: boolean;
   };
 }
@@ -23,15 +29,26 @@ export interface GitSnapshot {
   status: string;
 }
 
+export interface FinalizationResult {
+  mode: "none" | "cleanup" | "rebase-fast-forward" | "merge-commit" | "preserved";
+  success: boolean;
+  scratchBranchDeleted: boolean;
+  mergeCommitSha?: string;
+  mergeCommitSubject?: string;
+  mergeCommitBody?: string;
+  error?: string;
+}
+
 export interface IterationRecord {
   iteration: number;
   label: string;
   answerDigest: string;
   previousDigest?: string;
-  stableRepeats: number;
   commitCreated: boolean;
   commitSha?: string;
   commitParentSha?: string;
+  commitSubject?: string;
+  commitBody?: string;
   stopReason?: StopReason;
   commitNote?: string;
 }
@@ -41,36 +58,43 @@ export interface ActiveRun {
   originalPromptText: string;
   iteration: number;
   maxIterations: number;
-  stableRepeats: number;
   previousDigest?: string;
   reviewBaseSha?: string;
+  originalHeadSha?: string;
   originalBranchName?: string;
-  currentBranchName?: string;
-  gitMode: GitMode;
-  commitsEnabled: boolean;
+  scratchBranchName?: string;
+  namingModel?: NamingModelConfig;
   awaitingExtensionFollowUp: boolean;
   expectedPromptText?: string;
   cancelRequested?: "user";
   continuationPromptTemplate: string;
   commitBodyMaxChars?: number;
-  preflightGitFailure?: string;
   gitBaseline?: GitSnapshot;
   iterations: IterationRecord[];
+  finalization?: FinalizationResult;
   startedAt: string;
 }
 
-export interface PrepareGitRunResult {
-  originalBranchName?: string;
-  currentBranchName?: string;
-  commitsEnabled: boolean;
-  baseline?: GitSnapshot;
-  failureReason?: string;
+export interface PrepareScratchBranchRunResult {
+  originalBranchName: string;
+  originalHeadSha: string;
+  scratchBranchName: string;
+  baseline: GitSnapshot;
+}
+
+export interface PendingCommitResult {
+  readyToCommit: boolean;
+  changedFiles: string[];
+  diffSummary: string;
+  noCommitReason?: string;
 }
 
 export interface CommitIterationResult {
   commitCreated: boolean;
   commitSha?: string;
   commitParentSha?: string;
+  commitSubject?: string;
+  commitBody?: string;
   noCommitReason?: string;
 }
 
@@ -80,17 +104,21 @@ export interface UltrathinkStateEntry {
   promptText?: string;
   startedAt?: string;
   reviewBaseSha?: string;
+  originalHeadSha?: string;
   continuationPromptTemplate?: string;
   iteration?: number;
   label?: string;
   answerDigest?: string;
   previousDigest?: string;
-  stableRepeats?: number;
   commitCreated?: boolean;
   commitSha?: string;
   commitParentSha?: string;
+  commitSubject?: string;
+  commitBody?: string;
   commitNote?: string;
   stopReason?: StopReason;
   originalBranchName?: string;
-  currentBranchName?: string;
+  scratchBranchName?: string;
+  namingModel?: NamingModelConfig;
+  finalization?: FinalizationResult;
 }
