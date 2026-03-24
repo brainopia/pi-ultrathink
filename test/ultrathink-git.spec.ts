@@ -203,5 +203,99 @@ describe("Ultrathink git integration", () => {
 
     const branches = await gitStdout(cwd, ["branch", "--list", "ultrathink/*"]);
     expect(branches.trim()).not.toBe("");
+
+    // Bug #4 fix: should stay on the scratch branch after failed reintegration
+    const currentBranch = (await gitStdout(cwd, ["branch", "--show-current"])).trim();
+    expect(currentBranch).toBe("ultrathink/deterministic-branch");
+  });
+
+  it("continues the loop when the agent commits changes directly (not via extension)", async () => {
+    const cwd = await createTempGitRepo("ultrathink-git-agent-commit-");
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink", "Implement feature");
+
+    // Simulate agent committing directly via bash tool (git add + git commit)
+    await writeRepoFile(cwd, "feature.ts", "export function feature() {}\n");
+    await execWithCwd("git", ["add", "-A"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "feat: implement feature", "-m", "Agent committed this directly."], { cwd });
+
+    env.setLeafAssistantEntry("assistant-1", "Implemented the feature and committed");
+    await env.emit("agent_end", {
+      type: "agent_end",
+      messages: [user("Implement feature"), assistant("Implemented the feature and committed")],
+    });
+
+    // Should continue with a review prompt (NOT stop with no-git-changes)
+    expect(env.userMessages).toHaveLength(2); // original + review
+    expect(env.customMessages).toHaveLength(0); // no completion yet
+
+    // Second iteration: no changes → stop and reintegrate
+    const reviewPrompt = String(env.userMessages[1]?.content);
+    env.setLeafAssistantEntry("assistant-2", "Everything looks good");
+    await env.emit("agent_end", {
+      type: "agent_end",
+      messages: [user(reviewPrompt), assistant("Everything looks good")],
+    });
+
+    // Should stop with no-git-changes and successfully reintegrate
+    expect(env.customMessages).toHaveLength(1);
+    const summary = env.customMessages[0]?.message.content ?? "";
+    expect(summary).toContain("Scratch branch deleted: yes");
+
+    // Should be back on main with the agent's commit
+    const currentBranch = (await gitStdout(cwd, ["branch", "--show-current"])).trim();
+    expect(currentBranch).toBe("main");
+
+    const branches = await gitStdout(cwd, ["branch", "--list", "ultrathink/*"]);
+    expect(branches.trim()).toBe("");
+
+    // The agent's commit should be on main
+    const log = await gitStdout(cwd, ["log", "--oneline", "-3"]);
+    expect(log).toContain("feat: implement feature");
+  });
+
+  it("handles agent committing plus leftover uncommitted changes in the same iteration", async () => {
+    const cwd = await createTempGitRepo("ultrathink-git-mixed-commit-");
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink", "Build something");
+
+    // Simulate agent committing some files...
+    await writeRepoFile(cwd, "committed.ts", "export const a = 1;\n");
+    await execWithCwd("git", ["add", "-A"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "feat: partial work"], { cwd });
+    // ...and leaving other files uncommitted
+    await writeRepoFile(cwd, "uncommitted.ts", "export const b = 2;\n");
+
+    env.setLeafAssistantEntry("assistant-1", "Built most of it");
+    await env.emit("agent_end", {
+      type: "agent_end",
+      messages: [user("Build something"), assistant("Built most of it")],
+    });
+
+    // Extension should commit the remaining uncommitted changes
+    // and continue the loop (2 commits total on scratch now)
+    expect(env.userMessages).toHaveLength(2); // original + review
+    expect(env.customMessages).toHaveLength(0); // no completion yet
+
+    // Second iteration: no changes → stop and reintegrate with merge commit
+    const reviewPrompt = String(env.userMessages[1]?.content);
+    env.setLeafAssistantEntry("assistant-2", "All done");
+    await env.emit("agent_end", {
+      type: "agent_end",
+      messages: [user(reviewPrompt), assistant("All done")],
+    });
+
+    expect(env.customMessages).toHaveLength(1);
+    const summary = env.customMessages[0]?.message.content ?? "";
+    expect(summary).toContain("Scratch branch deleted: yes");
+
+    // Both files should be in the repo on main
+    const log = await gitStdout(cwd, ["log", "--oneline", "-5"]);
+    expect(log).toContain("feat: partial work");
+    expect(log).toContain("Merge ultrathink/deterministic-branch");
   });
 });

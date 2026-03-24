@@ -84,6 +84,7 @@ export interface PrepareScratchBranchRunResult {
 
 export interface PendingCommitResult {
   readyToCommit: boolean;
+  agentCommitted?: boolean;
   changedFiles: string[];
   diffSummary: string;
   noCommitReason?: string;

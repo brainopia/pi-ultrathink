@@ -2,7 +2,6 @@ import type {
   CommitIterationResult,
   FinalizationResult,
   GitSnapshot,
-  IterationRecord,
   PendingCommitResult,
   PrepareScratchBranchRunResult,
 } from "./types.js";
@@ -135,6 +134,7 @@ export async function prepareScratchBranchRun(args: {
 export async function prepareIterationCommit(args: {
   cwd: string;
   exec: ExecLike;
+  baselineHead?: string;
 }): Promise<PendingCommitResult> {
   if (!(await isGitRepository(args.exec, args.cwd))) {
     return { readyToCommit: false, changedFiles: [], diffSummary: "", noCommitReason: "not a git repository" };
@@ -142,6 +142,26 @@ export async function prepareIterationCommit(args: {
 
   const status = await readRelevantStatus(args.exec, args.cwd);
   if (status.trim().length === 0) {
+    // Working tree is clean — check if agent committed changes directly
+    if (args.baselineHead) {
+      const currentHead = await runGitStrict(args.exec, args.cwd, ["rev-parse", "HEAD"]);
+      const currentHeadSha = currentHead.stdout.trim();
+      if (currentHeadSha !== args.baselineHead) {
+        // HEAD advanced: the agent committed changes directly
+        const range = `${args.baselineHead}..HEAD`;
+        const diffSummary = await runGitStrict(args.exec, args.cwd, ["diff", "--stat", "--find-renames", range]);
+        const changedFiles = await runGitStrict(args.exec, args.cwd, ["diff", "--name-only", "--find-renames", range]);
+        return {
+          readyToCommit: false,
+          agentCommitted: true,
+          changedFiles: changedFiles.stdout
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean),
+          diffSummary: diffSummary.stdout.trim(),
+        };
+      }
+    }
     return { readyToCommit: false, changedFiles: [], diffSummary: "", noCommitReason: NO_REPOSITORY_CHANGES_NOTE };
   }
 
@@ -213,18 +233,48 @@ async function deleteBranch(exec: ExecLike, cwd: string, branchName: string): Pr
   await runGitStrict(exec, cwd, ["branch", "-d", branchName]);
 }
 
+export async function countCommitsBetween(args: {
+  exec: ExecLike;
+  cwd: string;
+  fromRef: string;
+  toRef: string;
+}): Promise<number> {
+  const result = await runGitStrict(args.exec, args.cwd, ["rev-list", "--count", `${args.fromRef}..${args.toRef}`]);
+  return parseInt(result.stdout.trim(), 10);
+}
+
+export async function getHeadCommitInfo(args: {
+  exec: ExecLike;
+  cwd: string;
+}): Promise<{ sha: string; parentSha?: string; subject: string; body: string }> {
+  const sha = await runGitStrict(args.exec, args.cwd, ["rev-parse", "--short", "HEAD"]);
+  const parentSha = await getCommitParentSha(args.exec, args.cwd, "HEAD");
+  const subject = await runGitStrict(args.exec, args.cwd, ["log", "-1", "--format=%s"]);
+  const body = await runGitStrict(args.exec, args.cwd, ["log", "-1", "--format=%b"]);
+  return {
+    sha: sha.stdout.trim(),
+    parentSha,
+    subject: subject.stdout.trim(),
+    body: body.stdout.trim(),
+  };
+}
+
 export async function finalizeScratchBranchRun(args: {
   cwd: string;
   exec: ExecLike;
   originalBranchName: string;
   scratchBranchName: string;
-  iterationRecords: IterationRecord[];
   mergeCommitMessage?: { subject: string; body: string };
   commitBodyMaxChars?: number;
 }): Promise<FinalizationResult> {
-  const committedIterations = args.iterationRecords.filter((record) => record.commitCreated && record.commitSha);
+  const commitCount = await countCommitsBetween({
+    exec: args.exec,
+    cwd: args.cwd,
+    fromRef: args.originalBranchName,
+    toRef: args.scratchBranchName,
+  });
 
-  if (committedIterations.length === 0) {
+  if (commitCount === 0) {
     await checkoutBranch(args.exec, args.cwd, args.originalBranchName);
     await deleteBranch(args.exec, args.cwd, args.scratchBranchName);
     return {
@@ -234,11 +284,11 @@ export async function finalizeScratchBranchRun(args: {
     };
   }
 
-  if (committedIterations.length === 1) {
+  if (commitCount === 1) {
     const rebaseResult = await runGit(args.exec, args.cwd, ["rebase", args.originalBranchName]);
     if (rebaseResult.code !== 0) {
       await runGit(args.exec, args.cwd, ["rebase", "--abort"]);
-      await runGit(args.exec, args.cwd, ["checkout", args.originalBranchName]);
+      // Stay on scratch branch — do NOT checkout original
       return {
         mode: "preserved",
         success: false,
@@ -250,6 +300,8 @@ export async function finalizeScratchBranchRun(args: {
     await checkoutBranch(args.exec, args.cwd, args.originalBranchName);
     const ffResult = await runGit(args.exec, args.cwd, ["merge", "--ff-only", args.scratchBranchName]);
     if (ffResult.code !== 0) {
+      // Go back to scratch branch
+      await runGit(args.exec, args.cwd, ["checkout", args.scratchBranchName]);
       return {
         mode: "preserved",
         success: false,
@@ -274,6 +326,8 @@ export async function finalizeScratchBranchRun(args: {
   const mergeResult = await runGit(args.exec, args.cwd, ["merge", "--no-ff", "--no-commit", args.scratchBranchName]);
   if (mergeResult.code !== 0) {
     await runGit(args.exec, args.cwd, ["merge", "--abort"]);
+    // Go back to scratch branch
+    await runGit(args.exec, args.cwd, ["checkout", args.scratchBranchName]);
     return {
       mode: "preserved",
       success: false,

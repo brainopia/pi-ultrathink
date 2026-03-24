@@ -133,9 +133,13 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
 
     try {
       const gitModule = await loadGitModule();
-      const committedIterations = run.iterations.filter(
-        (iteration) => iteration.commitCreated && iteration.commitSha && iteration.commitSubject && iteration.commitBody,
-      );
+
+      const actualCommitCount = await gitModule.countCommitsBetween({
+        exec: pi.exec,
+        cwd: ctx.cwd,
+        fromRef: run.originalBranchName,
+        toRef: run.scratchBranchName,
+      });
 
       let mergeCommitMessage:
         | {
@@ -144,7 +148,7 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
           }
         | undefined;
 
-      if (committedIterations.length > 1 && run.namingModel && run.originalHeadSha) {
+      if (actualCommitCount > 1 && run.namingModel && run.originalHeadSha) {
         const namingModule = await loadNamingModule();
         const branchDiff = await gitModule.describeCommitRange({
           cwd: ctx.cwd,
@@ -152,6 +156,9 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
           fromRef: run.originalHeadSha,
           toRef: run.scratchBranchName,
         });
+        const committedIterations = run.iterations.filter(
+          (iteration) => iteration.commitCreated && iteration.commitSha && iteration.commitSubject && iteration.commitBody,
+        );
         mergeCommitMessage = await namingModule.generateMergeCommitMessage({
           ctx,
           config: run.namingModel,
@@ -171,7 +178,6 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
         exec: pi.exec,
         originalBranchName: run.originalBranchName,
         scratchBranchName: run.scratchBranchName,
-        iterationRecords: run.iterations,
         mergeCommitMessage,
         commitBodyMaxChars: run.commitBodyMaxChars,
       });
@@ -341,7 +347,7 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       loadStateModule(),
     ]);
     const { buildReviewPrompt, computeAnswerDigest, decideStop } = reviewModule;
-    const { NO_REPOSITORY_CHANGES_NOTE, captureGitSnapshot, commitPreparedIteration, prepareIterationCommit } = gitModule;
+    const { NO_REPOSITORY_CHANGES_NOTE, captureGitSnapshot, commitPreparedIteration, getHeadCommitInfo, prepareIterationCommit } = gitModule;
     const { persistIteration } = stateModule;
     const answerDigest = computeAnswerDigest(assistantText);
     const previousDigest = run.previousDigest;
@@ -361,9 +367,20 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       const pendingCommit = await prepareIterationCommit({
         cwd: ctx.cwd,
         exec: pi.exec,
+        baselineHead: run.gitBaseline?.head ?? undefined,
       });
 
-      if (!pendingCommit.readyToCommit) {
+      if (pendingCommit.agentCommitted) {
+        // Agent committed changes directly — record the HEAD commit info
+        const headInfo = await getHeadCommitInfo({ exec: pi.exec, cwd: ctx.cwd });
+        commitCreated = true;
+        commitSha = headInfo.sha;
+        commitParentSha = headInfo.parentSha;
+        commitSubject = headInfo.subject || `ultrathink iteration ${run.iteration}`;
+        commitBody = headInfo.body || "Agent committed changes directly";
+        commitNote = "agent committed changes directly";
+        run.gitBaseline = await captureGitSnapshot(pi.exec, ctx.cwd);
+      } else if (!pendingCommit.readyToCommit) {
         commitNote = pendingCommit.noCommitReason;
       } else if (!run.namingModel) {
         commitNote = "Ultrathink naming model was unavailable during commit creation";
