@@ -29,17 +29,20 @@ export function createRunId(date = new Date()): string {
 }
 
 export function createActiveRun(args: {
+  mode?: "git" | "oracle";
   runId: string;
   promptText: string;
   config: UltrathinkConfig;
   continuationPromptTemplate: string;
-  namingModel: NamingModelConfig;
+  namingModel?: NamingModelConfig;
   reviewBaseSha?: string;
   originalHeadSha?: string;
   originalBranchName?: string;
   scratchBranchName?: string;
+  oracleMaxRounds?: number;
 }): ActiveRun {
   return {
+    mode: args.mode ?? "git",
     runId: args.runId,
     originalPromptText: args.promptText,
     iteration: 0,
@@ -55,6 +58,8 @@ export function createActiveRun(args: {
     commitBodyMaxChars: args.config.commitBodyMaxChars,
     iterations: [],
     startedAt: new Date().toISOString(),
+    oracleRound: args.mode === "oracle" ? 0 : undefined,
+    oracleMaxRounds: args.oracleMaxRounds,
   };
 }
 

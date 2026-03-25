@@ -6,11 +6,20 @@ export interface GeneratedCommitMessage {
   subject: string;
   body: string;
 }
+export interface OracleConfig {
+  provider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
+  systemPromptTemplate?: string;
+  maxRounds?: number;
+}
+
 export interface UltrathinkConfig {
   maxIterations: number;
   continuationPromptTemplate: string;
   commitBodyMaxChars?: number;
   naming?: NamingModelConfig;
+  oracle?: OracleConfig;
   git: {
     allowDirty: boolean;
   };
@@ -21,7 +30,9 @@ export type StopReason =
   | "max-iterations"
   | "git-error"
   | "cancelled-by-user"
-  | "cancelled-by-interrupt";
+  | "cancelled-by-interrupt"
+  | "oracle-accepted"
+  | "oracle-max-rounds";
 
 export interface GitSnapshot {
   repoExists: boolean;
@@ -54,6 +65,7 @@ export interface IterationRecord {
 }
 
 export interface ActiveRun {
+  mode: "git" | "oracle";
   runId: string;
   originalPromptText: string;
   iteration: number;
@@ -73,6 +85,10 @@ export interface ActiveRun {
   iterations: IterationRecord[];
   finalization?: FinalizationResult;
   startedAt: string;
+  /** Oracle-mode fields */
+  oracleRound?: number;
+  oracleMaxRounds?: number;
+  oracleAcceptSummary?: string;
 }
 
 export interface PrepareScratchBranchRunResult {

@@ -1,11 +1,12 @@
 <div align="center">
   <h1>🧠 pi-ultrathink</h1>
-  <p><b>A git-driven multi-pass review loop for Pi that works on a temporary branch</b></p>
+  <p><b>A git-driven multi-pass review loop and an AI oracle reviewer for Pi</b></p>
 </div>
 
-`pi-ultrathink` is a [Pi](https://github.com/mariozechner/pi-coding-agent) extension that adds `/ultrathink <prompt>`.
+`pi-ultrathink` is a [Pi](https://github.com/mariozechner/pi-coding-agent) extension that adds two commands:
 
-It turns one prompt into a visible review loop that keeps going only while the repository still changes. Every run happens on a dedicated `ultrathink/<slug>` branch, every changed iteration gets its own commit, and the finished work is reintegrated back into the original branch automatically.
+- `/ultrathink <prompt>` — a git-driven review loop on a temporary branch
+- `/ultrathink-oracle <prompt>` — an AI oracle reviewer that evaluates the agent’s work
 
 ## Why use Ultrathink?
 
@@ -138,6 +139,56 @@ Ultrathink stops when one of these happens:
 
 Only normal completions (`no-git-changes`, `max-iterations`) attempt automatic reintegration into the original branch.
 
+## Oracle Mode
+
+Oracle mode (`/ultrathink-oracle`) replaces the git-based stop signal with an **AI reviewer** (the oracle). This works without git and in any directory.
+
+### How oracle mode works
+
+```mermaid
+flowchart TD
+    Start(["/ultrathink-oracle Fix auth bugs"]) --> Setup[Setup widget: model + thinking + prompt]
+    Setup -->|Confirm| Task[Send task to main agent]
+    Setup -->|Cancel| End([Abort])
+    Task --> V1[Agent works on task]
+    V1 --> Oracle1[Oracle reviews code with tools]
+    Oracle1 --> Accept1{Oracle calls oracle_accept?}
+    Accept1 -->|Yes| Done[🔮 Oracle accepted]
+    Accept1 -->|No / feedback| Feedback1[Oracle feedback shown to user]
+    Feedback1 --> V2[Agent responds to feedback]
+    V2 --> OracleN[Oracle reviews again]
+    OracleN --> AcceptN{oracle_accept?}
+    AcceptN -->|Yes| Done
+    AcceptN -->|No| MaxCheck{Max rounds?}
+    MaxCheck -->|No| Feedback1
+    MaxCheck -->|Yes| MaxDone[🔮 Max rounds reached]
+```
+
+### Setup widget
+
+When you run `/ultrathink-oracle`, a setup overlay appears where you can:
+
+- Select the oracle’s model from available models
+- Choose the thinking level (minimal/low/medium/high/xhigh)
+- Edit the oracle’s system prompt
+
+Defaults come from `~/.pi/ultrathink.json` under the `oracle` key.
+
+### The oracle session
+
+The oracle is a separate in-process agent session (via `createAgentSession` from the Pi SDK). It has its own tools (read, bash, grep, find, ls) and can independently inspect the codebase. The oracle and main agent communicate through visible user messages — you can see the entire conversation.
+
+The oracle signals acceptance by calling a custom `oracle_accept` tool. This is an unambiguous machine-readable signal — no text parsing.
+
+### When does oracle mode stop?
+
+1. **Oracle accepts** — the oracle calls `oracle_accept`
+2. **Max rounds** — `oracle.maxRounds` reached without acceptance
+3. **User cancellation** — the user sends another prompt
+4. **Interrupt cancellation** — the active assistant turn is aborted
+
+Only normal completions (`no-git-changes`, `max-iterations`) attempt automatic reintegration into the original branch.
+
 ## Final summary
 
 At the end of the run, Ultrathink sends a visible summary message that includes:
@@ -165,6 +216,12 @@ Create `~/.pi/ultrathink.json`:
     "provider": "openai",
     "modelId": "gpt-4.1-mini"
   },
+  "oracle": {
+    "provider": "anthropic",
+    "modelId": "claude-sonnet-4",
+    "thinkingLevel": "high",
+    "maxRounds": 5
+  },
   "git": {
     "allowDirty": false
   }
@@ -179,6 +236,12 @@ Create `~/.pi/ultrathink.json`:
 - `naming.provider`: provider id for the small naming model
 - `naming.modelId`: model id for the small naming model
 - `git.allowDirty`: currently kept for backward compatibility, but Ultrathink expects a clean repo before it starts
+
+- `oracle.provider`: provider id for the oracle model
+- `oracle.modelId`: model id for the oracle model
+- `oracle.thinkingLevel`: default thinking level for the oracle (default: `"high"`)
+- `oracle.systemPromptTemplate`: override the built-in oracle system prompt
+- `oracle.maxRounds`: max oracle review rounds (default: `5`)
 
 ## Installation
 
