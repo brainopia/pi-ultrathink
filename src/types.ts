@@ -2,10 +2,12 @@ export interface NamingModelConfig {
   provider: string;
   modelId: string;
 }
+
 export interface GeneratedCommitMessage {
   subject: string;
   body: string;
 }
+
 export interface OracleConfig {
   provider?: string;
   modelId?: string;
@@ -37,6 +39,18 @@ export interface GitSnapshot {
   status: string;
 }
 
+export type GitRunKind = "task" | "review";
+export type ReviewSource = "dirty-bootstrap" | "last-pushed" | "first-unique";
+
+export interface ReviewCommitSummary {
+  sha: string;
+  subject: string;
+}
+
+export interface ReviewCommitDetails extends ReviewCommitSummary {
+  body: string;
+}
+
 export interface FinalizationResult {
   mode: "none" | "cleanup" | "rebase-fast-forward" | "merge-commit" | "preserved";
   success: boolean;
@@ -63,12 +77,17 @@ export interface IterationRecord {
 
 export interface ActiveRun {
   mode: "git" | "oracle";
+  gitRunKind?: GitRunKind;
   runId: string;
   originalPromptText: string;
   iteration: number;
   maxIterations: number;
   previousDigest?: string;
   reviewBaseSha?: string;
+  reviewSource?: ReviewSource;
+  reviewStartSha?: string;
+  reviewExclusiveBaseSha?: string;
+  reviewCommits?: ReviewCommitSummary[];
   originalHeadSha?: string;
   originalBranchName?: string;
   scratchBranchName?: string;
@@ -95,6 +114,13 @@ export interface PrepareScratchBranchRunResult {
   baseline: GitSnapshot;
 }
 
+export interface PrepareReviewRunResult extends PrepareScratchBranchRunResult {
+  reviewSource: ReviewSource;
+  reviewStartSha: string;
+  reviewExclusiveBaseSha: string;
+  reviewCommits: ReviewCommitSummary[];
+}
+
 export interface PendingCommitResult {
   readyToCommit: boolean;
   agentCommitted?: boolean;
@@ -117,7 +143,12 @@ export interface UltrathinkStateEntry {
   runId: string;
   promptText?: string;
   startedAt?: string;
+  gitRunKind?: GitRunKind;
   reviewBaseSha?: string;
+  reviewSource?: ReviewSource;
+  reviewStartSha?: string;
+  reviewExclusiveBaseSha?: string;
+  reviewCommits?: ReviewCommitSummary[];
   originalHeadSha?: string;
   continuationPromptTemplate?: string;
   iteration?: number;

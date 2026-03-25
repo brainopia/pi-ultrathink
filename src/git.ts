@@ -3,7 +3,11 @@ import type {
   FinalizationResult,
   GitSnapshot,
   PendingCommitResult,
+  PrepareReviewRunResult,
   PrepareScratchBranchRunResult,
+  ReviewCommitDetails,
+  ReviewCommitSummary,
+  ReviewSource,
 } from "./types.js";
 import type { ExecOptions, ExecResult } from "@mariozechner/pi-coding-agent";
 
@@ -43,6 +47,12 @@ async function getCurrentBranchNameStrict(exec: ExecLike, cwd: string): Promise<
   return branch;
 }
 
+async function getCommitSha(exec: ExecLike, cwd: string, ref = "HEAD", short = false): Promise<string> {
+  const args = short ? ["rev-parse", "--short", ref] : ["rev-parse", ref];
+  const result = await runGitStrict(exec, cwd, args);
+  return result.stdout.trim();
+}
+
 async function getCommitParentSha(exec: ExecLike, cwd: string, ref = "HEAD"): Promise<string | undefined> {
   const result = await runGit(exec, cwd, ["rev-parse", "--short", `${ref}^`]);
   if (result.code !== 0) {
@@ -73,38 +83,40 @@ function truncateCommitBody(text: string, maxChars = 4000): string {
   return `${truncated}\n\n[truncated to ${maxChars} characters]`;
 }
 
-export async function captureGitSnapshot(exec: ExecLike, cwd: string): Promise<GitSnapshot> {
-  if (!(await isGitRepository(exec, cwd))) {
-    return { repoExists: false, head: null, status: "" };
-  }
-
-  const headResult = await runGit(exec, cwd, ["rev-parse", "HEAD"]);
-  const status = await readRelevantStatus(exec, cwd);
-  return {
-    repoExists: true,
-    head: headResult.code === 0 ? headResult.stdout.trim() : null,
-    status,
-  };
+function parseGitLogRecords(stdout: string): ReviewCommitDetails[] {
+  return stdout
+    .split("\x1e")
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const [sha = "", subject = "", body = ""] = record.split("\x1f");
+      return {
+        sha: sha.trim(),
+        subject: subject.trim(),
+        body: body.trim(),
+      };
+    })
+    .filter((record) => record.sha && record.subject);
 }
 
-export async function prepareScratchBranchRun(args: {
+async function prepareScratchBranch(args: {
   cwd: string;
   exec: ExecLike;
   generateBranchSlug: (existingBranchNames: string[]) => Promise<string>;
   maxAttempts?: number;
+  allowDirty?: boolean;
 }): Promise<PrepareScratchBranchRunResult> {
   if (!(await isGitRepository(args.exec, args.cwd))) {
     throw new Error("Ultrathink requires a git repository.");
   }
 
   const status = await readRelevantStatus(args.exec, args.cwd);
-  if (status.trim().length > 0) {
+  if (!args.allowDirty && status.trim().length > 0) {
     throw new Error("Ultrathink requires a clean git working tree before it starts.");
   }
 
   const originalBranchName = await getCurrentBranchNameStrict(args.exec, args.cwd);
-  const originalHead = await runGitStrict(args.exec, args.cwd, ["rev-parse", "HEAD"]);
-  const originalHeadSha = originalHead.stdout.trim();
+  const originalHeadSha = await getCommitSha(args.exec, args.cwd, "HEAD");
   const existingBranchNames = await listLocalBranches(args.exec, args.cwd);
   const maxAttempts = args.maxAttempts ?? DEFAULT_BRANCH_ATTEMPTS;
 
@@ -131,6 +143,189 @@ export async function prepareScratchBranchRun(args: {
   throw new Error(`Ultrathink could not find a free scratch-branch name after ${maxAttempts} attempts.`);
 }
 
+async function resolveReviewSourceFromUpstream(args: {
+  cwd: string;
+  exec: ExecLike;
+  originalBranchName: string;
+  originalHeadSha: string;
+}): Promise<{
+  reviewSource: ReviewSource;
+  reviewStartSha: string;
+  reviewExclusiveBaseSha: string;
+  reviewCommits: ReviewCommitSummary[];
+}> {
+  const upstreamResult = await runGit(args.exec, args.cwd, [
+    "rev-parse",
+    "--abbrev-ref",
+    "--symbolic-full-name",
+    `${args.originalBranchName}@{u}`,
+  ]);
+  if (upstreamResult.code !== 0) {
+    throw new Error(
+      "Ultrathink review needs the current branch to have an upstream or pushed history before it can resolve a clean review range.",
+    );
+  }
+
+  const upstreamRef = upstreamResult.stdout.trim();
+  const uniqueCommitsResult = await runGitStrict(args.exec, args.cwd, [
+    "rev-list",
+    "--reverse",
+    `${upstreamRef}..${args.originalHeadSha}`,
+  ]);
+  const uniqueCommitRefs = uniqueCommitsResult.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (uniqueCommitRefs.length === 0) {
+    throw new Error("Ultrathink review found nothing to review on the current branch.");
+  }
+
+  const firstUniqueCommitRef = uniqueCommitRefs[0]!;
+  const reviewExclusiveBaseSha = await getCommitParentSha(args.exec, args.cwd, firstUniqueCommitRef);
+  if (!reviewExclusiveBaseSha) {
+    throw new Error(
+      `Ultrathink review could not determine the parent of the first reviewed commit ${firstUniqueCommitRef}.`,
+    );
+  }
+
+  const reviewCommits = await listCommitSummariesBetween({
+    cwd: args.cwd,
+    exec: args.exec,
+    fromRef: reviewExclusiveBaseSha,
+    toRef: args.originalHeadSha,
+  });
+  if (reviewCommits.length === 0) {
+    throw new Error("Ultrathink review found nothing to review on the current branch.");
+  }
+
+  const upstreamBranchName = upstreamRef.split("/").at(-1) ?? upstreamRef;
+  return {
+    reviewSource: upstreamBranchName === args.originalBranchName ? "last-pushed" : "first-unique",
+    reviewStartSha: reviewCommits[0]!.sha,
+    reviewExclusiveBaseSha,
+    reviewCommits,
+  };
+}
+
+export async function captureGitSnapshot(exec: ExecLike, cwd: string): Promise<GitSnapshot> {
+  if (!(await isGitRepository(exec, cwd))) {
+    return { repoExists: false, head: null, status: "" };
+  }
+
+  const headResult = await runGit(exec, cwd, ["rev-parse", "HEAD"]);
+  const status = await readRelevantStatus(exec, cwd);
+  return {
+    repoExists: true,
+    head: headResult.code === 0 ? headResult.stdout.trim() : null,
+    status,
+  };
+}
+
+export async function prepareScratchBranchRun(args: {
+  cwd: string;
+  exec: ExecLike;
+  generateBranchSlug: (existingBranchNames: string[]) => Promise<string>;
+  maxAttempts?: number;
+}): Promise<PrepareScratchBranchRunResult> {
+  return await prepareScratchBranch({ ...args, allowDirty: false });
+}
+
+export async function prepareReviewRun(args: {
+  cwd: string;
+  exec: ExecLike;
+  generateBranchSlug: (existingBranchNames: string[]) => Promise<string>;
+  createBootstrapCommitMessage: (args: { changedFiles: string[]; diffSummary: string }) => Promise<{ subject: string; body: string }>;
+  commitBodyMaxChars?: number;
+  maxAttempts?: number;
+}): Promise<PrepareReviewRunResult> {
+  if (!(await isGitRepository(args.exec, args.cwd))) {
+    throw new Error("Ultrathink requires a git repository.");
+  }
+
+  const status = await readRelevantStatus(args.exec, args.cwd);
+  if (status.trim().length === 0) {
+    const originalBranchName = await getCurrentBranchNameStrict(args.exec, args.cwd);
+    const originalHeadSha = await getCommitSha(args.exec, args.cwd, "HEAD");
+    const reviewRange = await resolveReviewSourceFromUpstream({
+      cwd: args.cwd,
+      exec: args.exec,
+      originalBranchName,
+      originalHeadSha,
+    });
+    const scratchSetup = await prepareScratchBranch({
+      cwd: args.cwd,
+      exec: args.exec,
+      generateBranchSlug: args.generateBranchSlug,
+      maxAttempts: args.maxAttempts,
+      allowDirty: false,
+    });
+
+    return {
+      ...scratchSetup,
+      reviewSource: reviewRange.reviewSource,
+      reviewStartSha: reviewRange.reviewStartSha,
+      reviewExclusiveBaseSha: reviewRange.reviewExclusiveBaseSha,
+      reviewCommits: reviewRange.reviewCommits,
+    };
+  }
+
+  const scratchSetup = await prepareScratchBranch({
+    cwd: args.cwd,
+    exec: args.exec,
+    generateBranchSlug: args.generateBranchSlug,
+    maxAttempts: args.maxAttempts,
+    allowDirty: true,
+  });
+
+  const pendingCommit = await prepareIterationCommit({
+    cwd: args.cwd,
+    exec: args.exec,
+    baselineHead: scratchSetup.baseline.head ?? undefined,
+  });
+  if (!pendingCommit.readyToCommit) {
+    throw new Error(
+      pendingCommit.noCommitReason
+        ? `Ultrathink review could not create the bootstrap commit: ${pendingCommit.noCommitReason}`
+        : "Ultrathink review could not stage the dirty working tree for bootstrap review.",
+    );
+  }
+
+  const bootstrapCommitMessage = await args.createBootstrapCommitMessage({
+    changedFiles: pendingCommit.changedFiles,
+    diffSummary: pendingCommit.diffSummary,
+  });
+  const bootstrapCommit = await commitPreparedIteration({
+    cwd: args.cwd,
+    exec: args.exec,
+    subject: bootstrapCommitMessage.subject,
+    body: bootstrapCommitMessage.body,
+    commitBodyMaxChars: args.commitBodyMaxChars,
+  });
+
+  if (!bootstrapCommit.commitSha || !bootstrapCommit.commitParentSha) {
+    throw new Error("Ultrathink review created a bootstrap commit but could not resolve its git metadata.");
+  }
+
+  const reviewCommits = await listCommitSummariesBetween({
+    cwd: args.cwd,
+    exec: args.exec,
+    fromRef: bootstrapCommit.commitParentSha,
+    toRef: "HEAD",
+  });
+
+  return {
+    originalBranchName: scratchSetup.originalBranchName,
+    originalHeadSha: scratchSetup.originalHeadSha,
+    scratchBranchName: scratchSetup.scratchBranchName,
+    reviewSource: "dirty-bootstrap",
+    reviewStartSha: bootstrapCommit.commitSha,
+    reviewExclusiveBaseSha: bootstrapCommit.commitParentSha,
+    reviewCommits,
+    baseline: await captureGitSnapshot(args.exec, args.cwd),
+  };
+}
+
 export async function prepareIterationCommit(args: {
   cwd: string;
   exec: ExecLike;
@@ -142,12 +337,9 @@ export async function prepareIterationCommit(args: {
 
   const status = await readRelevantStatus(args.exec, args.cwd);
   if (status.trim().length === 0) {
-    // Working tree is clean — check if agent committed changes directly
     if (args.baselineHead) {
-      const currentHead = await runGitStrict(args.exec, args.cwd, ["rev-parse", "HEAD"]);
-      const currentHeadSha = currentHead.stdout.trim();
+      const currentHeadSha = await getCommitSha(args.exec, args.cwd, "HEAD");
       if (currentHeadSha !== args.baselineHead) {
-        // HEAD advanced: the agent committed changes directly
         const range = `${args.baselineHead}..HEAD`;
         const diffSummary = await runGitStrict(args.exec, args.cwd, ["diff", "--stat", "--find-renames", range]);
         const changedFiles = await runGitStrict(args.exec, args.cwd, ["diff", "--name-only", "--find-renames", range]);
@@ -195,11 +387,11 @@ export async function commitPreparedIteration(args: {
   }
 
   await runGitStrict(args.exec, args.cwd, ["commit", "-m", subject, "-m", body]);
-  const sha = await runGitStrict(args.exec, args.cwd, ["rev-parse", "--short", "HEAD"]);
+  const sha = await getCommitSha(args.exec, args.cwd, "HEAD", true);
   const parentSha = await getCommitParentSha(args.exec, args.cwd, "HEAD");
   return {
     commitCreated: true,
-    commitSha: sha.stdout.trim(),
+    commitSha: sha,
     commitParentSha: parentSha,
     commitSubject: subject,
     commitBody: body,
@@ -243,16 +435,37 @@ export async function countCommitsBetween(args: {
   return parseInt(result.stdout.trim(), 10);
 }
 
+export async function listCommitDetailsBetween(args: {
+  exec: ExecLike;
+  cwd: string;
+  fromRef: string;
+  toRef: string;
+}): Promise<ReviewCommitDetails[]> {
+  const range = `${args.fromRef}..${args.toRef}`;
+  const result = await runGitStrict(args.exec, args.cwd, ["log", "--reverse", "--format=%h%x1f%s%x1f%b%x1e", range]);
+  return parseGitLogRecords(result.stdout);
+}
+
+export async function listCommitSummariesBetween(args: {
+  exec: ExecLike;
+  cwd: string;
+  fromRef: string;
+  toRef: string;
+}): Promise<ReviewCommitSummary[]> {
+  const commits = await listCommitDetailsBetween(args);
+  return commits.map(({ sha, subject }) => ({ sha, subject }));
+}
+
 export async function getHeadCommitInfo(args: {
   exec: ExecLike;
   cwd: string;
 }): Promise<{ sha: string; parentSha?: string; subject: string; body: string }> {
-  const sha = await runGitStrict(args.exec, args.cwd, ["rev-parse", "--short", "HEAD"]);
+  const sha = await getCommitSha(args.exec, args.cwd, "HEAD", true);
   const parentSha = await getCommitParentSha(args.exec, args.cwd, "HEAD");
   const subject = await runGitStrict(args.exec, args.cwd, ["log", "-1", "--format=%s"]);
   const body = await runGitStrict(args.exec, args.cwd, ["log", "-1", "--format=%b"]);
   return {
-    sha: sha.stdout.trim(),
+    sha,
     parentSha,
     subject: subject.stdout.trim(),
     body: body.stdout.trim(),
@@ -288,7 +501,6 @@ export async function finalizeScratchBranchRun(args: {
     const rebaseResult = await runGit(args.exec, args.cwd, ["rebase", args.originalBranchName]);
     if (rebaseResult.code !== 0) {
       await runGit(args.exec, args.cwd, ["rebase", "--abort"]);
-      // Stay on scratch branch — do NOT checkout original
       return {
         mode: "preserved",
         success: false,
@@ -300,7 +512,6 @@ export async function finalizeScratchBranchRun(args: {
     await checkoutBranch(args.exec, args.cwd, args.originalBranchName);
     const ffResult = await runGit(args.exec, args.cwd, ["merge", "--ff-only", args.scratchBranchName]);
     if (ffResult.code !== 0) {
-      // Go back to scratch branch
       await runGit(args.exec, args.cwd, ["checkout", args.scratchBranchName]);
       return {
         mode: "preserved",
@@ -326,7 +537,6 @@ export async function finalizeScratchBranchRun(args: {
   const mergeResult = await runGit(args.exec, args.cwd, ["merge", "--no-ff", "--no-commit", args.scratchBranchName]);
   if (mergeResult.code !== 0) {
     await runGit(args.exec, args.cwd, ["merge", "--abort"]);
-    // Go back to scratch branch
     await runGit(args.exec, args.cwd, ["checkout", args.scratchBranchName]);
     return {
       mode: "preserved",
@@ -338,13 +548,13 @@ export async function finalizeScratchBranchRun(args: {
 
   const mergeBody = truncateCommitBody(args.mergeCommitMessage.body.trim(), args.commitBodyMaxChars);
   await runGitStrict(args.exec, args.cwd, ["commit", "-m", args.mergeCommitMessage.subject.trim(), "-m", mergeBody]);
-  const mergeSha = await runGitStrict(args.exec, args.cwd, ["rev-parse", "--short", "HEAD"]);
+  const mergeSha = await getCommitSha(args.exec, args.cwd, "HEAD", true);
   await deleteBranch(args.exec, args.cwd, args.scratchBranchName);
   return {
     mode: "merge-commit",
     success: true,
     scratchBranchDeleted: true,
-    mergeCommitSha: mergeSha.stdout.trim(),
+    mergeCommitSha: mergeSha,
     mergeCommitSubject: args.mergeCommitMessage.subject.trim(),
     mergeCommitBody: mergeBody,
   };

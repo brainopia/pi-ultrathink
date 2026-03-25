@@ -16,9 +16,10 @@ The behavior must be directly observable. In a git repository with local commits
 - [x] (2026-03-25 18:08 UTC+8) Inspected the current implementation in `src/index.ts`, `src/review.ts`, `src/git.ts`, `src/state.ts`, `src/types.ts`, `src/ui.ts`, `src/naming.ts`, `src/config.ts`, and the current test suite to confirm the shipped behavior today only exposes `/ultrathink` and `/ultrathink-oracle`, rejects dirty repositories at git-mode start, and assumes the git review prompt always begins with `Original task:`.
 - [x] (2026-03-25 18:12 UTC+8) Captured the user-approved design in `docs/plans/2026-03-25-ultrathink-review-design.md`.
 - [x] (2026-03-25 18:16 UTC+8) Drafted this ExecPlan so implementation can proceed later without needing the original chat context.
-- [ ] Implement git review-range resolution for `/ultrathink-review`, including dirty bootstrap commits, last-pushed resolution, first-unique resolution, and reviewed-commit listing.
-- [ ] Add the new `/ultrathink-review` command, prompt-building path, run metadata, summary updates, tests, and README changes.
-- [ ] Run `npm run check` and record the results in this plan.
+- [x] (2026-03-25 18:58 UTC+8) Implemented review-mode git range resolution in `src/git.ts`, including `prepareReviewRun()`, dirty bootstrap commits, last-pushed vs first-unique detection, reviewed-commit listing, and new git test helpers for upstream-backed repositories.
+- [x] (2026-03-25 19:18 UTC+8) Added `/ultrathink-review`, review-mode prompt assembly, run metadata, start/summary UI, README updates, AGENTS updates, and expanded command-spike plus git integration coverage.
+- [x] (2026-03-25 19:26 UTC+8) Ran `npm run check` successfully after the implementation changes.
+- [x] (2026-03-25 19:27 UTC+8) Ran `npm run demo` successfully as a regression check for the shipped git loop behavior.
 
 ## Surprises & Discoveries
 
@@ -33,6 +34,12 @@ The behavior must be directly observable. In a git repository with local commits
 
 - Observation: Existing tests already exercise scratch-branch git flows with real git repositories, which means the safest path is to extend those tests instead of inventing a separate fake git layer.
   Evidence: `test/ultrathink-git.spec.ts` and `test/ultrathink-command-spike.spec.ts` create temporary repositories through `test/support/gitTestUtils.ts` and assert actual branch, commit, and prompt behavior.
+
+- Observation: Multi-commit review runs can include a bootstrap commit that is not present in `run.iterations`, so merge-commit naming cannot rely only on iteration records.
+  Evidence: `/ultrathink-review` creates the dirty bootstrap commit before iteration `v1`, which means the original finalize path would have omitted that commit when generating the final merge-commit summary.
+
+- Observation: Clean review-mode failures such as “nothing to review” or “missing upstream” are simplest and safest when the range is resolved before creating the scratch branch.
+  Evidence: Implementing clean-range resolution first in `prepareReviewRun()` lets `/ultrathink-review` exit without ever creating `ultrathink/...` branches in the no-op and missing-upstream cases, which the new tests assert.
 
 ## Decision Log
 
@@ -72,23 +79,31 @@ The behavior must be directly observable. In a git repository with local commits
   Rationale: Running an empty review loop would waste a turn and hide the more useful fact that the current branch has no local work after the comparison point.
   Date/Author: 2026-03-25 / Pi
 
+- Decision: Generate multi-commit merge messages from the actual scratch-branch commit log instead of from recorded iteration entries.
+  Rationale: Review runs can seed the scratch branch with a bootstrap commit before iteration tracking begins, and merge summaries should include that commit too.
+  Date/Author: 2026-03-25 / Pi
+
+- Decision: Resolve clean `/ultrathink-review` ranges before creating the scratch branch.
+  Rationale: This keeps missing-upstream and nothing-to-review exits simple, leaves the repository untouched in those cases, and still preserves the dirty-bootstrap branch-first behavior where it matters.
+  Date/Author: 2026-03-25 / Pi
+
 ## Outcomes & Retrospective
 
-The feature is not implemented yet. The main outcome of this planning pass is a user-approved design plus a concrete, self-contained execution plan. The implementation work that follows must preserve the current `/ultrathink` and `/ultrathink-oracle` behaviors while adding one new git review entry point that is visibly different only in startup logic, prompt construction, and review-range computation.
+The feature is implemented. A Pi user can now run `/ultrathink-review` inside a git repository that already contains local work, see a visible reviewed-commit list, receive a fixed English review prompt, and continue the same scratch-branch review loop until another pass no longer changes the repository.
 
-The most important constraint to remember is that this feature changes the current repository-cleanliness rule only for one command. `/ultrathink` should continue refusing dirty repositories, while `/ultrathink-review` must accept them by converting them into a bootstrap commit on the scratch branch. That split is the main source of implementation risk and should remain explicit in code, tests, and README wording.
+The highest-risk part of the work was preserving the old `/ultrathink` cleanliness rule while making `/ultrathink-review` accept dirty trees. That split now lives in explicit startup paths: `/ultrathink` still uses the strict `prepareScratchBranchRun()` path, while `/ultrathink-review` uses `prepareReviewRun()` and bootstraps dirty changes into a first reviewed commit only for review mode.
 
 ## Context and Orientation
 
-This repository is a Pi extension package written in TypeScript and loaded directly from source. The main extension entry point is `src/index.ts`. It registers commands, tracks one active run, reacts to `input`, `session_start`, and `agent_end`, and sends visible user prompts back into Pi. Today it registers `/ultrathink` and `/ultrathink-oracle`, but not `/ultrathink-review`.
+This repository is a Pi extension package written in TypeScript and loaded directly from source. The main extension entry point is `src/index.ts`. It registers `/ultrathink`, `/ultrathink-review`, and `/ultrathink-oracle`, tracks one active run, reacts to `input`, `session_start`, and `agent_end`, and sends visible user prompts back into Pi.
 
-The existing git workflow lives mostly in `src/git.ts`. A “scratch branch” in this plan means the temporary branch named `ultrathink/<ai-slug>` where Ultrathink performs work before reintegration. `prepareScratchBranchRun()` currently requires a clean repository, records the original branch and head, creates the scratch branch, and returns baseline state. `prepareIterationCommit()` stages and summarizes changes after each assistant turn. `commitPreparedIteration()` writes a commit using already-generated subject and body text. `finalizeScratchBranchRun()` handles zero-commit cleanup, one-commit rebase-plus-fast-forward, and multi-commit merge reintegration.
+The git workflow lives mostly in `src/git.ts`. A “scratch branch” in this plan means the temporary branch named `ultrathink/<ai-slug>` where Ultrathink performs work before reintegration. `prepareScratchBranchRun()` still requires a clean repository for `/ultrathink`, while `prepareReviewRun()` handles review-mode startup by either resolving a clean review range or creating a dirty bootstrap commit on the scratch branch. `prepareIterationCommit()` stages and summarizes changes after each assistant turn. `commitPreparedIteration()` writes a commit using already-generated subject and body text. `finalizeScratchBranchRun()` handles zero-commit cleanup, one-commit rebase-plus-fast-forward, and multi-commit merge reintegration.
 
-Prompt construction lives in `src/review.ts`. Today `buildReviewPrompt()` always emits a task-first prompt that says `Original task:` and then asks the model to review `git diff <reviewBaseSha> HEAD`. The default continuation body itself lives in `src/promptTemplate.ts`.
+Prompt construction lives in `src/review.ts`. `buildReviewPrompt()` now supports both the existing task-first `/ultrathink` prompt and the review-first `/ultrathink-review` prompt that injects an English header plus `git diff <exclusiveBaseSha> HEAD`. The default continuation body itself lives in `src/promptTemplate.ts`.
 
-Run state lives in `src/types.ts` and `src/state.ts`. `ActiveRun` stores the original prompt text, iteration count, git baseline, review base SHA, branch names, naming model, and finalization result, but it does not yet describe whether a git run came from a normal task or from a review command. `state.ts` persists start, iteration, and stop entries as custom session entries of type `ultrathink-state`.
+Run state lives in `src/types.ts` and `src/state.ts`. `ActiveRun` now distinguishes normal git task runs from review runs with `gitRunKind`, `reviewSource`, `reviewStartSha`, `reviewExclusiveBaseSha`, and `reviewCommits`. `state.ts` persists that metadata as custom session entries of type `ultrathink-state`.
 
-The UI helpers live in `src/ui.ts`. They currently set a short status line and emit a plain-text completion summary. There is no start-of-run custom message that lists reviewed commits.
+The UI helpers live in `src/ui.ts`. They set the short status line, render the visible start-of-run reviewed-commit list for `/ultrathink-review`, and emit the plain-text completion summary that now distinguishes review runs from task runs.
 
 Commit-message generation lives in `src/naming.ts`. The naming module already knows how to ensure a naming model is configured, create scratch-branch slugs, generate per-iteration commit messages, and generate final merge-commit messages. `/ultrathink-review` should reuse this layer so the bootstrap commit for dirty changes also receives an AI-authored subject and body.
 
@@ -282,4 +297,4 @@ In `src/naming.ts`, either reuse `generateIterationCommitMessage()` for bootstra
 
 In `README.md`, add one new documented command and keep the rest of the public contract stable. Do not change `/ultrathink-oracle` behavior as part of this feature.
 
-Plan revision note: initial ExecPlan drafted on 2026-03-25 after the user approved the design for `/ultrathink-review`. The plan was created to hand off implementation cleanly without starting any code changes in this planning session.
+Plan revision note: updated on 2026-03-25 after implementation completed. This revision marks the finished milestones, records implementation discoveries and decisions, updates the orientation section to match the shipped code, and captures the successful `npm run check` and `npm run demo` results.

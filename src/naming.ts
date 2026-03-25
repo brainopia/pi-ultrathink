@@ -20,6 +20,14 @@ type GenerateIterationCommitMessageArgs = {
   changedFiles: string[];
 };
 
+type GenerateBootstrapCommitMessageArgs = {
+  ctx: ExtensionContext;
+  config: NamingModelConfig;
+  promptText: string;
+  diffSummary: string;
+  changedFiles: string[];
+};
+
 type GenerateMergeCommitMessageArgs = {
   ctx: ExtensionContext;
   config: NamingModelConfig;
@@ -33,6 +41,7 @@ type NamingTestOverrides = {
   ensureNamingModel?: (ctx: ExtensionCommandContext, config: UltrathinkConfig) => Promise<NamingModelConfig | null>;
   generateBranchSlug?: (args: GenerateBranchSlugArgs) => Promise<string>;
   generateIterationCommitMessage?: (args: GenerateIterationCommitMessageArgs) => Promise<GeneratedCommitMessage>;
+  generateBootstrapCommitMessage?: (args: GenerateBootstrapCommitMessageArgs) => Promise<GeneratedCommitMessage>;
   generateMergeCommitMessage?: (args: GenerateMergeCommitMessageArgs) => Promise<GeneratedCommitMessage>;
 };
 
@@ -238,6 +247,35 @@ export async function generateIterationCommitMessage(
       args.changedFiles.length === 0 ? "Changed files: none" : `Changed files:\n${args.changedFiles.join("\n")}`,
       `Diff summary:\n${args.diffSummary.trim() || "(no diff summary available)"}`,
       `Assistant output:\n${args.assistantOutput.trim() || "(empty assistant output)"}`,
+      "Return JSON now.",
+    ].join("\n\n"),
+  );
+
+  return normalizeCommitMessage(response);
+}
+
+export async function generateBootstrapCommitMessage(
+  args: GenerateBootstrapCommitMessageArgs,
+): Promise<GeneratedCommitMessage> {
+  if (testOverrides?.generateBootstrapCommitMessage) {
+    return testOverrides.generateBootstrapCommitMessage(args);
+  }
+
+  const response = await runNamingCompletion<GeneratedCommitMessage>(
+    args.ctx,
+    args.config,
+    [
+      "You write concise, high-signal git commit messages for a bootstrap review commit.",
+      "Return strict JSON with exactly two keys: subject and body.",
+      "The subject must describe the already-existing local changes being captured before review begins.",
+      "The body must summarize what was captured and why this bootstrap commit exists.",
+      "Do not mention that an AI wrote the message. Do not include markdown fences.",
+    ].join(" "),
+    [
+      "Task type: bootstrap-review-commit",
+      `Review prompt context:\n${args.promptText.trim()}`,
+      args.changedFiles.length === 0 ? "Changed files: none" : `Changed files:\n${args.changedFiles.join("\n")}`,
+      `Diff summary:\n${args.diffSummary.trim() || "(no diff summary available)"}`,
       "Return JSON now.",
     ].join("\n\n"),
   );

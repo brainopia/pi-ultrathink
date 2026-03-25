@@ -1,4 +1,4 @@
-import type { ActiveRun, FinalizationResult, IterationRecord, StopReason } from "./types.js";
+import type { ActiveRun, FinalizationResult, IterationRecord, ReviewCommitSummary, ReviewSource, StopReason } from "./types.js";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 function describeStopReason(stopReason: StopReason): string {
@@ -53,6 +53,29 @@ function formatScratchCommit(iteration: IterationRecord): string[] {
   return [firstLine, ...formatBodyLines(iteration.commitBody)];
 }
 
+function describeReviewSource(reviewSource?: ReviewSource): string | undefined {
+  if (!reviewSource) {
+    return undefined;
+  }
+
+  switch (reviewSource) {
+    case "dirty-bootstrap":
+      return "dirty-bootstrap";
+    case "last-pushed":
+      return "last-pushed";
+    case "first-unique":
+      return "first-unique";
+  }
+}
+
+function formatReviewCommits(reviewCommits: ReviewCommitSummary[] | undefined): string[] {
+  if (!reviewCommits || reviewCommits.length === 0) {
+    return ["- none"];
+  }
+
+  return reviewCommits.map((commit) => `- ${commit.sha} ${commit.subject}`);
+}
+
 export function setUltrathinkStatus(ctx: ExtensionContext, run?: ActiveRun): void {
   if (!run) {
     ctx.ui.setStatus("ultrathink", undefined);
@@ -68,7 +91,40 @@ export function setUltrathinkStatus(ctx: ExtensionContext, run?: ActiveRun): voi
 
   const nextIteration = Math.min(run.iteration + 1, run.maxIterations);
   const branch = run.scratchBranchName ? ` • ${run.scratchBranchName}` : "";
-  ctx.ui.setStatus("ultrathink", `🧠 ultrathink v${nextIteration}/${run.maxIterations}${branch}`);
+  const kind = run.gitRunKind === "review" ? "review " : "";
+  ctx.ui.setStatus("ultrathink", `🧠 ultrathink ${kind}v${nextIteration}/${run.maxIterations}${branch}`);
+}
+
+export function sendReviewStartMessage(
+  pi: ExtensionAPI,
+  args: {
+    runId: string;
+    originalBranchName: string;
+    scratchBranchName: string;
+    reviewSource: ReviewSource;
+    reviewStartSha: string;
+    reviewExclusiveBaseSha: string;
+    reviewCommits: ReviewCommitSummary[];
+  },
+): void {
+  const firstCommit = args.reviewCommits[0];
+  const lines = [
+    `Ultrathink review run ${args.runId} will inspect commits from ${args.originalBranchName} on ${args.scratchBranchName}.`,
+    `Review source: ${describeReviewSource(args.reviewSource) ?? args.reviewSource}`,
+    firstCommit ? `First reviewed commit: ${firstCommit.sha} ${firstCommit.subject}` : `First reviewed commit: ${args.reviewStartSha}`,
+    `Diff base: ${args.reviewExclusiveBaseSha}`,
+    "Reviewed commits:",
+    ...formatReviewCommits(args.reviewCommits),
+  ];
+
+  pi.sendMessage(
+    {
+      customType: "ultrathink-review-start",
+      display: true,
+      content: lines.join("\n"),
+    },
+    { triggerTurn: false },
+  );
 }
 
 export function sendCompletionMessage(
@@ -85,14 +141,29 @@ export function sendCompletionMessage(
   }
 
   const scratchCommits = args.iterations.filter((iteration) => iteration.commitCreated);
+  const openingLine =
+    args.run.gitRunKind === "review"
+      ? `Ultrathink review run ${args.run.runId} finished because ${describeStopReason(args.stopReason)}.`
+      : `Ultrathink run ${args.run.runId} finished because ${describeStopReason(args.stopReason)}.`;
   const lines = [
-    `Ultrathink run ${args.run.runId} finished because ${describeStopReason(args.stopReason)}.`,
+    openingLine,
     args.run.originalBranchName ? `Original branch: ${args.run.originalBranchName}` : "",
     args.run.scratchBranchName ? `Scratch branch: ${args.run.scratchBranchName}` : "",
     args.run.namingModel ? `Naming model: ${args.run.namingModel.provider}/${args.run.namingModel.modelId}` : "",
+    args.run.gitRunKind === "review" && args.run.reviewSource
+      ? `Review source: ${describeReviewSource(args.run.reviewSource) ?? args.run.reviewSource}`
+      : "",
+    args.run.gitRunKind === "review" && args.run.reviewExclusiveBaseSha
+      ? `Review diff base: ${args.run.reviewExclusiveBaseSha}`
+      : "",
     describeFinalization(args.run, args.run.finalization),
     `Scratch branch deleted: ${args.run.finalization?.scratchBranchDeleted ? "yes" : "no"}`,
   ].filter(Boolean);
+
+  if (args.run.gitRunKind === "review") {
+    lines.push("Reviewed commits:");
+    lines.push(...formatReviewCommits(args.run.reviewCommits));
+  }
 
   lines.push("Scratch branch commits:");
   if (scratchCommits.length === 0) {

@@ -53,6 +53,39 @@ export async function createTempGitRepo(prefix = "ultrathink-test-"): Promise<st
   return cwd;
 }
 
+export async function createTempBareGitRepo(prefix = "ultrathink-remote-"): Promise<string> {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), prefix));
+  await execWithCwd("git", ["init", "--bare"], { cwd });
+  return cwd;
+}
+
+export async function addRemote(cwd: string, name: string, remotePath: string): Promise<void> {
+  const result = await execWithCwd("git", ["remote", "add", name, remotePath], { cwd });
+  if (result.code !== 0) {
+    throw new Error(`git remote add ${name} ${remotePath} failed: ${result.stderr || result.stdout}`);
+  }
+}
+
+export async function pushBranch(cwd: string, remoteName: string, branchName: string, setUpstream = true): Promise<void> {
+  const args = setUpstream
+    ? ["push", "-u", remoteName, `${branchName}:${branchName}`]
+    : ["push", remoteName, `${branchName}:${branchName}`];
+  const result = await execWithCwd("git", args, { cwd });
+  if (result.code !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
+  }
+}
+
+export async function setBranchUpstream(cwd: string, upstreamRef: string, branchName?: string): Promise<void> {
+  const args = branchName
+    ? ["branch", "--set-upstream-to", upstreamRef, branchName]
+    : ["branch", "--set-upstream-to", upstreamRef];
+  const result = await execWithCwd("git", args, { cwd });
+  if (result.code !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
+  }
+}
+
 export async function writeRepoFile(cwd: string, relativePath: string, content: string): Promise<void> {
   const fullPath = path.join(cwd, relativePath);
   await mkdir(path.dirname(fullPath), { recursive: true });

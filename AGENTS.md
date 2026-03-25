@@ -1,8 +1,9 @@
 # pi-ultrathink — Agent Notes
 
 ## What this repository is
-- `pi-ultrathink` is a Pi extension package that adds `/ultrathink <prompt>` and `/ultrathink-oracle <prompt>`.
+- `pi-ultrathink` is a Pi extension package that adds `/ultrathink <prompt>`, `/ultrathink-review [optional prompt]`, and `/ultrathink-oracle <prompt>`.
 - `/ultrathink` turns one prompt into a visible multi-pass review loop driven by Git changes.
+- `/ultrathink-review` starts from existing branch work, computes a review range, and immediately sends a visible review prompt plus a reviewed-commit list.
 - `/ultrathink-oracle` uses an AI oracle reviewer that evaluates the agent's work through bidirectional dialogue. Works without git.
 - User-facing usage lives in `README.md`.
 - Design history lives in `execplan/ultrathink-review-loop.md`, but current `src/` code and tests are the source of truth if the plan and implementation diverge.
@@ -38,9 +39,9 @@
 - `test/support/gitTestUtils.ts` — temp git repo helpers and real `git` execution for tests
 - `test/support/globalConfigTestUtils.ts` — temp global-config override helpers for tests and demo
 - `test/support/namingTestUtils.ts` — naming-model test helpers
-- `test/ultrathink-command-spike.spec.ts` — prompt shape + continuation template behavior + naming-model persistence
+- `test/ultrathink-command-spike.spec.ts` — prompt shape + continuation template behavior + naming-model persistence + review-mode startup prompt coverage
 - `test/ultrathink-orchestration.spec.ts` — cancellation and loop-stop flow
-- `test/ultrathink-git.spec.ts` — scratch-branch commits, reintegration, and dirty repo handling
+- `test/ultrathink-git.spec.ts` — scratch-branch commits, reintegration, dirty repo handling, and `/ultrathink-review` range resolution
 - `test/ultrathink-oracle.spec.ts` — oracle mode: config, UI, stop reasons, state management
 - `demo/fakeProvider.ts` — scripted fake provider/tooling for the SDK demo
 - `demo/runDemo.ts` — end-to-end demo using the real extension in temp repos
@@ -50,8 +51,9 @@
 
 ## Runtime behavior and invariants
 - Only one active Ultrathink run is tracked per session (git-based or oracle-based).
-- Starting a new `/ultrathink` or `/ultrathink-oracle` run cancels any currently active one.
-- The initial task is sent as a normal visible user message via `pi.sendUserMessage(promptText)`.
+- Starting a new `/ultrathink`, `/ultrathink-review`, or `/ultrathink-oracle` run cancels any currently active one.
+- `/ultrathink` sends the initial task as a normal visible user message via `pi.sendUserMessage(promptText)`.
+- `/ultrathink-review` sends a visible custom start message listing the reviewed commits, then sends a visible English review prompt as the first user message.
 - Follow-up review passes are also visible user messages, not hidden control messages.
 - Pi's interrupt action cancels the active Ultrathink loop; the extension detects this via `stopReason === "aborted"` on the assistant message in the `agent_end` handler.
 - If the user types another prompt during an active run, the loop stops with `cancelled-by-user`.
@@ -71,7 +73,9 @@
 
 ## Git behavior
 - Git is the main continuation signal.
-- Every `/ultrathink` run starts on a dedicated scratch branch named `ultrathink/<ai-slug>`.
+- Every `/ultrathink` run starts on a dedicated scratch branch named `ultrathink/<ai-slug>` and still requires a clean working tree.
+- Every `/ultrathink-review` run also starts on a dedicated scratch branch named `ultrathink/<ai-slug>`, but it may bootstrap dirty working-tree changes into the first reviewed commit.
+- Review-mode sources are `dirty-bootstrap`, `last-pushed`, and `first-unique`. The reviewed commit list is shown before the first pass.
 - If an iteration leaves no repository changes, no commit is created and the run stops with `no-git-changes`.
 - If an iteration changes the repo, the extension stages everything and creates a commit with AI-generated subject/body.
 - Normal completion reintegrates work back into the original branch automatically:
@@ -98,12 +102,14 @@ Current supported fields:
 - This is an ESM TypeScript project; keep local import specifiers using `.js` suffixes inside `.ts` files.
 - There is no transpile step in normal development; `tsc` is used only for typechecking.
 - The project intentionally keeps runtime dependencies minimal and relies mostly on Node built-ins plus Pi peer deps.
-- The review loop is driven by `agent_end`, `input`, `session_start`, and the `/ultrathink` and `/ultrathink-oracle` commands.
+- The review loop is driven by `agent_end`, `input`, `session_start`, and the `/ultrathink`, `/ultrathink-review`, and `/ultrathink-oracle` commands.
 
-## Known gotcha: ExecPlan vs shipped behavior
-The ExecPlan contains notes about rendering placeholders like `{headSha}` and `{parentSha}` inside the continuation template. The shipped implementation does **not** currently expand these placeholders.
+## Known gotcha: continuation-template behavior
 
-`buildReviewPrompt()` inserts the accepted template verbatim after the fixed task/diff header. This is intentional in the current codebase, and tests assert that literal tokens such as `{headSha}` remain unchanged.
+- `/ultrathink` still prepends `Original task:` plus the diff command before the continuation body.
+- `/ultrathink-review` prepends a fixed English review header plus `git diff <exclusiveBaseSha> HEAD` before the continuation body.
+- The shipped implementation does **not** expand placeholders like `{headSha}` and `{parentSha}` inside the continuation body.
+- `buildReviewPrompt()` inserts the accepted template verbatim after the fixed header. Tests assert that literal tokens such as `{headSha}` remain unchanged.
 
 When modifying continuation-template behavior, update:
 - `src/review.ts`
