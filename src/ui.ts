@@ -17,6 +17,8 @@ function describeStopReason(stopReason: StopReason): string {
       return "the configured iteration limit was reached";
     case "git-error":
       return "git-backed iteration tracking failed, so no further automatic reviews were queued";
+    case "naming-error":
+      return "the naming model failed to generate a commit message, but a fallback commit was created and the run continued to completion";
     case "cancelled-by-user":
       return "the user sent another prompt, so the active loop was cancelled";
     case "cancelled-by-interrupt":

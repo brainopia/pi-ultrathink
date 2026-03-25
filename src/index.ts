@@ -110,7 +110,7 @@ function getLeafAssistantEntryId(ctx: ExtensionContext): string | undefined {
 }
 
 function isNormalCompletion(stopReason: StopReason): boolean {
-  return stopReason === "no-git-changes" || stopReason === "max-iterations" || stopReason === "oracle-accepted" || stopReason === "oracle-max-rounds";
+  return stopReason === "no-git-changes" || stopReason === "max-iterations" || stopReason === "naming-error" || stopReason === "oracle-accepted" || stopReason === "oracle-max-rounds";
 }
 
 function createPreservedFinalization(run: ActiveRun, stopReason: StopReason): FinalizationResult {
@@ -708,33 +708,52 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
         run.gitBaseline = await captureGitSnapshot(pi.exec, ctx.cwd);
       } else if (!pendingCommit.readyToCommit) {
         commitNote = pendingCommit.noCommitReason;
-      } else if (!run.namingModel) {
-        commitNote = "Ultrathink naming model was unavailable during commit creation";
-        stopReason = "git-error";
       } else {
-        const generatedCommit = await namingModule.generateIterationCommitMessage({
-          ctx,
-          config: run.namingModel,
-          promptText: run.originalPromptText,
-          iteration: run.iteration,
-          assistantOutput: assistantText,
-          diffSummary: pendingCommit.diffSummary,
-          changedFiles: pendingCommit.changedFiles,
-        });
-        const commitResult = await commitPreparedIteration({
-          cwd: ctx.cwd,
-          subject: generatedCommit.subject,
-          body: generatedCommit.body,
-          commitBodyMaxChars: run.commitBodyMaxChars,
-          exec: pi.exec,
-        });
-        commitCreated = commitResult.commitCreated;
-        commitSha = commitResult.commitSha;
-        commitParentSha = commitResult.commitParentSha;
-        commitSubject = commitResult.commitSubject;
-        commitBody = commitResult.commitBody;
-        commitNote = commitResult.noCommitReason;
-        run.gitBaseline = await captureGitSnapshot(pi.exec, ctx.cwd);
+        let namingFailed = false;
+        let generatedSubject = `ultrathink iteration v${run.iteration}`;
+        let generatedBody = `Automatic commit for iteration v${run.iteration}`;
+
+        if (!run.namingModel) {
+          namingFailed = true;
+          commitNote = "Ultrathink naming model was unavailable; using fallback commit message";
+        } else {
+          try {
+            const generatedCommit = await namingModule.generateIterationCommitMessage({
+              ctx,
+              config: run.namingModel,
+              promptText: run.originalPromptText,
+              iteration: run.iteration,
+              assistantOutput: assistantText,
+              diffSummary: pendingCommit.diffSummary,
+              changedFiles: pendingCommit.changedFiles,
+            });
+            generatedSubject = generatedCommit.subject;
+            generatedBody = generatedCommit.body;
+          } catch (namingError) {
+            namingFailed = true;
+            commitNote = `Naming model failed, using fallback message: ${namingError instanceof Error ? namingError.message : String(namingError)}`;
+          }
+        }
+
+        try {
+          const commitResult = await commitPreparedIteration({
+            cwd: ctx.cwd,
+            subject: generatedSubject,
+            body: generatedBody,
+            commitBodyMaxChars: run.commitBodyMaxChars,
+            exec: pi.exec,
+          });
+          commitCreated = commitResult.commitCreated;
+          commitSha = commitResult.commitSha;
+          commitParentSha = commitResult.commitParentSha;
+          commitSubject = commitResult.commitSubject;
+          commitBody = commitResult.commitBody;
+          if (!namingFailed) commitNote = commitResult.noCommitReason;
+          run.gitBaseline = await captureGitSnapshot(pi.exec, ctx.cwd);
+        } catch (gitError) {
+          commitNote = gitError instanceof Error ? gitError.message : String(gitError);
+          stopReason = "git-error";
+        }
       }
     } catch (error) {
       commitNote = error instanceof Error ? error.message : String(error);

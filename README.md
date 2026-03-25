@@ -174,9 +174,10 @@ Ultrathink stops when one of these happens:
 2. **Iteration cap** — `maxIterations` was reached
 3. **User cancellation** — the user sends another prompt
 4. **Interrupt cancellation** — the active assistant turn is aborted
-5. **Git or metadata failure** — branch/commit/finalization automation fails
+5. **Naming model failure** — if the naming model cannot produce a commit message, a fallback commit is created with a generic message and the run continues; the final stop reason is `naming-error`
+6. **Git failure** — branch/commit/finalization automation fails
 
-Only normal completions (`no-git-changes`, `max-iterations`) attempt automatic reintegration into the original branch.
+Normal completions (`no-git-changes`, `max-iterations`, `naming-error`) attempt automatic reintegration into the original branch.
 
 ## Oracle Mode
 

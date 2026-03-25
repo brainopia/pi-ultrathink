@@ -28,6 +28,7 @@ export type StopReason =
   | "no-git-changes"
   | "max-iterations"
   | "git-error"
+  | "naming-error"
   | "cancelled-by-user"
   | "cancelled-by-interrupt"
   | "oracle-accepted"

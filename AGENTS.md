@@ -79,6 +79,8 @@
 - Review range resolution tries the upstream tracking branch first, then falls back to finding unique commits compared to other local branches. It fails only when neither strategy can determine a range.
 - If an iteration leaves no repository changes, no commit is created and the run stops with `no-git-changes`.
 - If an iteration changes the repo, the extension stages everything and creates a commit with AI-generated subject/body.
+- If the naming model fails to produce a valid commit message (e.g. truncated JSON from non-English output), a fallback commit with a generic message is created and the run continues. The final stop reason is `naming-error`.
+- `naming-error` is treated as a normal completion, so automatic reintegration still happens.
 - Normal completion reintegrates work back into the original branch automatically:
   - 0 commits — delete the empty scratch branch
   - 1 commit — rebase the scratch branch and fast-forward the original branch

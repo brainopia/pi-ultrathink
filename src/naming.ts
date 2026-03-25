@@ -73,6 +73,13 @@ function parseJsonObject<T>(text: string): T {
   }
 }
 
+const INPUT_TRUNCATION_LIMIT = 8000;
+
+function truncateInput(text: string, maxChars = INPUT_TRUNCATION_LIMIT): string {
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars).trimEnd() + "\n[truncated]";
+}
+
 function sanitizeSlug(value: string): string {
   return value
     .normalize("NFKD")
@@ -127,7 +134,7 @@ async function runNamingCompletion<T>(
   let lastError: Error | undefined;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      const response = await complete(model, { systemPrompt, messages }, { apiKey, maxTokens: 800 });
+      const response = await complete(model, { systemPrompt, messages }, { apiKey, maxTokens: 2000 });
       const text = asText(response);
       return parseJsonObject<T>(text);
     } catch (error) {
@@ -205,6 +212,7 @@ export async function generateBranchSlug(args: GenerateBranchSlugArgs): Promise<
       "Return strict JSON with exactly one key: slug.",
       "The slug must be 2 to 5 lowercase kebab-case words, descriptive, and must not include the ultrathink/ prefix.",
       "Do not include quotes outside JSON. Do not include explanations.",
+      "Always respond in English.",
     ].join(" "),
     [
       "Task type: branch-slug",
@@ -237,16 +245,17 @@ export async function generateIterationCommitMessage(
       "You write concise, high-signal git commit messages for code changes.",
       "Return strict JSON with exactly two keys: subject and body.",
       "The subject must be one line, imperative or descriptive, under 72 characters when possible.",
-      "The body must explain what changed and why in plain language, using short bullet points when helpful.",
+      "The body must explain what changed and why in plain language, using short bullet points when helpful. Keep the body under 400 characters.",
       "Do not mention that an AI wrote the message. Do not include markdown fences.",
+      "Always respond in English.",
     ].join(" "),
     [
       "Task type: iteration-commit",
-      `Original prompt:\n${args.promptText.trim()}`,
+      `Original prompt:\n${truncateInput(args.promptText.trim())}`,
       `Iteration: v${args.iteration}`,
       args.changedFiles.length === 0 ? "Changed files: none" : `Changed files:\n${args.changedFiles.join("\n")}`,
-      `Diff summary:\n${args.diffSummary.trim() || "(no diff summary available)"}`,
-      `Assistant output:\n${args.assistantOutput.trim() || "(empty assistant output)"}`,
+      `Diff summary:\n${truncateInput(args.diffSummary.trim()) || "(no diff summary available)"}`,
+      `Assistant output:\n${truncateInput(args.assistantOutput.trim()) || "(empty assistant output)"}`,
       "Return JSON now.",
     ].join("\n\n"),
   );
@@ -268,14 +277,15 @@ export async function generateBootstrapCommitMessage(
       "You write concise, high-signal git commit messages for a bootstrap review commit.",
       "Return strict JSON with exactly two keys: subject and body.",
       "The subject must describe the already-existing local changes being captured before review begins.",
-      "The body must summarize what was captured and why this bootstrap commit exists.",
+      "The body must summarize what was captured and why this bootstrap commit exists. Keep the body under 400 characters.",
       "Do not mention that an AI wrote the message. Do not include markdown fences.",
+      "Always respond in English.",
     ].join(" "),
     [
       "Task type: bootstrap-review-commit",
-      `Review prompt context:\n${args.promptText.trim()}`,
+      `Review prompt context:\n${truncateInput(args.promptText.trim())}`,
       args.changedFiles.length === 0 ? "Changed files: none" : `Changed files:\n${args.changedFiles.join("\n")}`,
-      `Diff summary:\n${args.diffSummary.trim() || "(no diff summary available)"}`,
+      `Diff summary:\n${truncateInput(args.diffSummary.trim()) || "(no diff summary available)"}`,
       "Return JSON now.",
     ].join("\n\n"),
   );
@@ -299,15 +309,16 @@ export async function generateMergeCommitMessage(args: GenerateMergeCommitMessag
       "You write final merge commit messages that summarize a completed implementation branch.",
       "Return strict JSON with exactly two keys: subject and body.",
       "The subject must clearly describe the integrated outcome.",
-      "The body must summarize the branch's main changes and why they matter, based on the provided commit history and diff summary.",
+      "The body must summarize the branch's main changes and why they matter, based on the provided commit history and diff summary. Keep the body under 400 characters.",
       "Do not mention that an AI wrote the message. Do not include markdown fences.",
+      "Always respond in English.",
     ].join(" "),
     [
       "Task type: merge-commit",
-      `Original prompt:\n${args.promptText.trim()}`,
+      `Original prompt:\n${truncateInput(args.promptText.trim())}`,
       `Scratch branch: ${args.scratchBranchName}`,
-      `Scratch-branch commits:\n${commitText || "(none)"}`,
-      `Combined diff summary:\n${args.diffSummary.trim() || "(no diff summary available)"}`,
+      `Scratch-branch commits:\n${truncateInput(commitText) || "(none)"}`,
+      `Combined diff summary:\n${truncateInput(args.diffSummary.trim()) || "(no diff summary available)"}`,
       "Return JSON now.",
     ].join("\n\n"),
   );
