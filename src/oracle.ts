@@ -60,6 +60,23 @@ export interface CreateOracleOptions {
 // Create the oracle session
 // ---------------------------------------------------------------------------
 
+
+async function createOracleResourceLoader(
+  DefaultResourceLoader: typeof import("@mariozechner/pi-coding-agent").DefaultResourceLoader,
+  options: CreateOracleOptions,
+) {
+  const loader = new DefaultResourceLoader({
+    cwd: options.cwd,
+    systemPrompt: options.systemPrompt,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+  });
+  await loader.reload();
+  return loader;
+}
+
 export async function createOracleSession(options: CreateOracleOptions): Promise<OracleSession> {
   const {
     createAgentSession,
@@ -109,14 +126,7 @@ export async function createOracleSession(options: CreateOracleOptions): Promise
     ],
     customTools: [oracleAcceptTool as unknown as ToolDefinition],
     sessionManager: SessionManager.inMemory(options.cwd),
-    resourceLoader: new DefaultResourceLoader({
-      cwd: options.cwd,
-      systemPrompt: options.systemPrompt,
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-    }),
+    resourceLoader: await createOracleResourceLoader(DefaultResourceLoader, options),
   });
 
   wrapper.session = session;
