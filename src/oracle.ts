@@ -69,6 +69,7 @@ export async function createOracleSession(options: CreateOracleOptions): Promise
     createGrepTool,
     createFindTool,
     createLsTool,
+    DefaultResourceLoader,
   } = await import("@mariozechner/pi-coding-agent");
 
   const wrapper: OracleSession = {
@@ -108,10 +109,15 @@ export async function createOracleSession(options: CreateOracleOptions): Promise
     ],
     customTools: [oracleAcceptTool as unknown as ToolDefinition],
     sessionManager: SessionManager.inMemory(options.cwd),
+    resourceLoader: new DefaultResourceLoader({
+      cwd: options.cwd,
+      systemPrompt: options.systemPrompt,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+    }),
   });
-
-  // Set oracle system prompt
-  (session as any)._systemPromptOverride = options.systemPrompt;
 
   wrapper.session = session;
   return wrapper;
@@ -126,7 +132,7 @@ export async function sendToOracle(oracle: OracleSession, message: string): Prom
   oracle.accepted = false;
   oracle.acceptSummary = undefined;
 
-  await oracle.session.sendUserMessage(message);
+  await oracle.session.prompt(message, { expandPromptTemplates: false });
 
   // Extract the assistant's text from the oracle's messages
   const messages = oracle.session.messages;
