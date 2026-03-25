@@ -187,11 +187,11 @@ The oracle signals acceptance by calling a custom `oracle_accept` tool. This is 
 3. **User cancellation** — the user sends another prompt
 4. **Interrupt cancellation** — the active assistant turn is aborted
 
-Only normal completions (`no-git-changes`, `max-iterations`) attempt automatic reintegration into the original branch.
+Oracle mode does not use git branches or reintegration.
 
 ## Final summary
 
-At the end of the run, Ultrathink sends a visible summary message that includes:
+At the end of a **git-mode** run, Ultrathink sends a visible summary message that includes:
 
 - original branch
 - scratch branch
@@ -201,7 +201,12 @@ At the end of the run, Ultrathink sends a visible summary message that includes:
 - every scratch-branch commit with SHA, title, and description
 - the final merge commit, if one was created
 
-This summary doubles as a work log.
+At the end of an **oracle-mode** run, the summary includes:
+
+- the number of oracle review rounds
+- the oracle's verdict (if the oracle accepted the work)
+
+Both summaries double as a work log.
 
 ## Configuration
 
