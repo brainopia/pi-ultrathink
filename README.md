@@ -3,11 +3,11 @@
   <p><b>A git-driven multi-pass review loop and an AI oracle reviewer for Pi</b></p>
 </div>
 
-`pi-ultrathink` is a [Pi](https://github.com/mariozechner/pi-coding-agent) extension that adds two commands:
+`pi-ultrathink` is a [Pi](https://github.com/mariozechner/pi-coding-agent) extension that adds three commands:
 
 - `/ultrathink <prompt>` — a git-driven review loop on a temporary branch
+- `/ultrathink-review [optional prompt]` — a git-driven review loop for existing branch changes
 - `/ultrathink-oracle <prompt>` — an AI oracle reviewer that evaluates the agent’s work
-
 ## Why use Ultrathink?
 
 Complex coding tasks often need more than one pass. The model writes code, reviews what changed, fixes issues, checks again, and stops only when another pass no longer changes the repo.
@@ -48,6 +48,8 @@ Inside Pi:
 
 ```text
 /ultrathink Migrate the database schema to v4 and update all queries
+/ultrathink-review
+/ultrathink-review Focus on correctness, edge cases, and test gaps
 ```
 
 ### First run: choose a small naming model
@@ -71,6 +73,28 @@ Before the loop starts, Pi opens the continuation-prompt editor. Ultrathink auto
 
 You only edit the review instructions that come after that fixed header.
 
+
+### Reviewing existing branch changes with `/ultrathink-review`
+
+Use `/ultrathink-review` when the work already exists on the current branch and you want Ultrathink to inspect and improve it in several visible passes.
+
+This mode differs from `/ultrathink` in a few important ways:
+
+- it does **not** open the continuation-prompt editor
+- it sends the first message as an English review prompt, not as your raw slash-command text
+- it shows a visible start message listing the commits that will be reviewed
+- it still runs on a temporary `ultrathink/...` scratch branch
+- it allows a dirty working tree by converting those local edits into one bootstrap commit on the scratch branch before review begins
+
+If you omit the optional prompt text, Ultrathink uses the normal default continuation body from `continuationPromptTemplate`. If you provide text, that text replaces the default body, but Ultrathink still injects the fixed English review header and the computed `git diff <base> HEAD` command above it.
+
+The review range is chosen like this:
+
+1. **Dirty working tree** → create a bootstrap commit on the scratch branch and review that commit first
+2. **Current branch tracks its pushed branch** → review commits after the last pushed point (`last-pushed`)
+3. **Current branch tracks another upstream branch** → review commits starting at the first commit unique to the current branch (`first-unique`)
+
+If there is nothing to review, Ultrathink tells you so and does not start a run. If a clean review needs upstream information but the current branch has no upstream, Ultrathink fails clearly instead of guessing a base branch.
 ### Conversation flow
 
 The loop stays visible in chat history:
@@ -126,6 +150,20 @@ When the run ends normally:
 On successful reintegration, the `ultrathink/...` branch is deleted.
 
 If the final rebase or merge conflicts, Ultrathink aborts the operation, preserves the scratch branch, and tells you to resolve it manually.
+
+### Review-mode startup rules
+
+`/ultrathink` still requires a clean working tree before it starts.
+
+`/ultrathink-review` is the one exception. If the repository is dirty, it first:
+
+1. creates the scratch branch
+2. stages all current changes
+3. creates an AI-authored bootstrap commit
+4. includes that bootstrap commit in the visible reviewed-commit list
+5. reviews the resulting range with a prompt that always includes an English header and `git diff <exclusiveBaseSha> HEAD`
+
+For a clean `/ultrathink-review` start, the current branch must have an upstream if Ultrathink needs one to resolve the review range. The extension does not guess `main` or `master`.
 
 ## When does the loop stop?
 
@@ -191,7 +229,7 @@ Oracle mode does not use git branches or reintegration.
 
 ## Final summary
 
-At the end of a **git-mode** run, Ultrathink sends a visible summary message that includes:
+At the end of a **git task run** (`/ultrathink`), Ultrathink sends a visible summary message that includes:
 
 - original branch
 - scratch branch
@@ -200,6 +238,12 @@ At the end of a **git-mode** run, Ultrathink sends a visible summary message tha
 - whether the scratch branch was deleted
 - every scratch-branch commit with SHA, title, and description
 - the final merge commit, if one was created
+
+At the end of a **git review run** (`/ultrathink-review`), the summary also identifies that it was a review run and includes:
+
+- the review source (`dirty-bootstrap`, `last-pushed`, or `first-unique`)
+- the diff base used for the injected review prompt
+- the reviewed commit list shown at startup
 
 At the end of an **oracle-mode** run, the summary includes:
 

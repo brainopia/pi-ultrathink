@@ -1,7 +1,11 @@
 import type {
   ActiveRun,
+  GitRunKind,
   IterationRecord,
   NamingModelConfig,
+  ReviewCommitDetails,
+  ReviewCommitSummary,
+  ReviewSource,
   StopReason,
   UltrathinkConfig,
   UltrathinkStateEntry,
@@ -30,12 +34,18 @@ export function createRunId(date = new Date()): string {
 
 export function createActiveRun(args: {
   mode?: "git" | "oracle";
+  gitRunKind?: GitRunKind;
   runId: string;
   promptText: string;
   config: UltrathinkConfig;
   continuationPromptTemplate: string;
   namingModel?: NamingModelConfig;
   reviewBaseSha?: string;
+  reviewSource?: ReviewSource;
+  reviewStartSha?: string;
+  reviewExclusiveBaseSha?: string;
+  reviewCommits?: ReviewCommitSummary[];
+  seedScratchCommits?: ReviewCommitDetails[];
   originalHeadSha?: string;
   originalBranchName?: string;
   scratchBranchName?: string;
@@ -43,6 +53,7 @@ export function createActiveRun(args: {
 }): ActiveRun {
   return {
     mode: args.mode ?? "git",
+    gitRunKind: args.mode === "git" || args.mode === undefined ? args.gitRunKind ?? "task" : undefined,
     runId: args.runId,
     originalPromptText: args.promptText,
     iteration: 0,
@@ -54,6 +65,11 @@ export function createActiveRun(args: {
     awaitingExtensionFollowUp: false,
     expectedPromptText: args.promptText,
     reviewBaseSha: args.reviewBaseSha,
+    reviewSource: args.reviewSource,
+    reviewStartSha: args.reviewStartSha,
+    reviewExclusiveBaseSha: args.reviewExclusiveBaseSha,
+    reviewCommits: args.reviewCommits,
+    seedScratchCommits: args.seedScratchCommits,
     continuationPromptTemplate: args.continuationPromptTemplate,
     commitBodyMaxChars: args.config.commitBodyMaxChars,
     iterations: [],
@@ -69,7 +85,13 @@ export function persistRunStart(pi: ExtensionAPI, run: ActiveRun): void {
     runId: run.runId,
     promptText: run.originalPromptText,
     startedAt: run.startedAt,
+    gitRunKind: run.gitRunKind,
     reviewBaseSha: run.reviewBaseSha,
+    reviewSource: run.reviewSource,
+    reviewStartSha: run.reviewStartSha,
+    reviewExclusiveBaseSha: run.reviewExclusiveBaseSha,
+    reviewCommits: run.reviewCommits,
+    seedScratchCommits: run.seedScratchCommits,
     originalHeadSha: run.originalHeadSha,
     continuationPromptTemplate: run.continuationPromptTemplate,
     originalBranchName: run.originalBranchName,
@@ -83,6 +105,12 @@ export function persistIteration(pi: ExtensionAPI, run: ActiveRun, record: Itera
   const entry: UltrathinkStateEntry = {
     kind: "iteration",
     runId: run.runId,
+    gitRunKind: run.gitRunKind,
+    reviewSource: run.reviewSource,
+    reviewStartSha: run.reviewStartSha,
+    reviewExclusiveBaseSha: run.reviewExclusiveBaseSha,
+    reviewCommits: run.reviewCommits,
+    seedScratchCommits: run.seedScratchCommits,
     iteration: record.iteration,
     label: record.label,
     answerDigest: record.answerDigest,
@@ -102,8 +130,14 @@ export function persistStop(pi: ExtensionAPI, run: ActiveRun, stopReason: StopRe
   const entry: UltrathinkStateEntry = {
     kind: "stop",
     runId: run.runId,
+    gitRunKind: run.gitRunKind,
     stopReason,
     reviewBaseSha: run.reviewBaseSha,
+    reviewSource: run.reviewSource,
+    reviewStartSha: run.reviewStartSha,
+    reviewExclusiveBaseSha: run.reviewExclusiveBaseSha,
+    reviewCommits: run.reviewCommits,
+    seedScratchCommits: run.seedScratchCommits,
     originalHeadSha: run.originalHeadSha,
     iteration: run.iteration,
     continuationPromptTemplate: run.continuationPromptTemplate,

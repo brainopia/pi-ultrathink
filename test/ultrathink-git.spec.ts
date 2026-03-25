@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import ultrathinkExtension from "../src/index.js";
 import { createFakePiEnvironment } from "./support/fakePi.js";
-import { createTempGitRepo, execWithCwd, gitStdout, writeRepoFile } from "./support/gitTestUtils.js";
+import {
+  addRemote,
+  createTempBareGitRepo,
+  createTempGitRepo,
+  execWithCwd,
+  gitStdout,
+  pushBranch,
+  setBranchUpstream,
+  writeRepoFile,
+} from "./support/gitTestUtils.js";
 import { installTempGlobalUltrathinkConfigPath } from "./support/globalConfigTestUtils.js";
 import { installDeterministicNaming, resetDeterministicNaming } from "./support/namingTestUtils.js";
 
@@ -18,6 +27,14 @@ function user(text: string) {
     role: "user",
     content: text,
   };
+}
+
+async function createRepoWithTrackedMain(prefix = "ultrathink-git-review-"): Promise<string> {
+  const cwd = await createTempGitRepo(prefix);
+  const remote = await createTempBareGitRepo(`${prefix}remote-`);
+  await addRemote(cwd, "origin", remote);
+  await pushBranch(cwd, "origin", "main");
+  return cwd;
 }
 
 describe("Ultrathink git integration", () => {
@@ -62,7 +79,7 @@ describe("Ultrathink git integration", () => {
       messages: [user(reviewPrompt2), assistant("No further substantial changes")],
     });
 
-    const headSubject = (await gitStdout(cwd, ["log", "-1", "--format=%s"])) .trim();
+    const headSubject = (await gitStdout(cwd, ["log", "-1", "--format=%s"])).trim();
     const graph = await gitStdout(cwd, ["log", "--oneline", "--decorate", "--graph", "--all", "-6"]);
     const branches = await gitStdout(cwd, ["branch", "--list", "ultrathink/*"]);
 
@@ -148,7 +165,6 @@ describe("Ultrathink git integration", () => {
 
     await env.invokeCommand("ultrathink", "Do nothing useful");
 
-    // Emit agent_end with no file changes → no-git-changes → stop
     env.setLeafAssistantEntry("assistant-1", "Nothing to change");
     await env.emit("agent_end", {
       type: "agent_end",
@@ -173,7 +189,6 @@ describe("Ultrathink git integration", () => {
 
     await env.invokeCommand("ultrathink", "Make conflicting changes");
 
-    // Iteration 1: write conflict.txt on scratch branch
     await writeRepoFile(cwd, "conflict.txt", "from-ultrathink\n");
     env.setLeafAssistantEntry("assistant-1", "Wrote conflict.txt");
     await env.emit("agent_end", {
@@ -181,14 +196,12 @@ describe("Ultrathink git integration", () => {
       messages: [user("Make conflicting changes"), assistant("Wrote conflict.txt")],
     });
 
-    // Simulate a conflicting commit on the original branch while on the scratch branch
     await execWithCwd("git", ["checkout", "main"], { cwd });
     await writeRepoFile(cwd, "conflict.txt", "from-main\n");
     await execWithCwd("git", ["add", "conflict.txt"], { cwd });
     await execWithCwd("git", ["commit", "-m", "main-side conflict"], { cwd });
     await execWithCwd("git", ["checkout", "ultrathink/deterministic-branch"], { cwd });
 
-    // Iteration 2: no changes → triggers stop → reintegration attempt → conflict
     const reviewPrompt = String(env.userMessages[1]?.content);
     env.setLeafAssistantEntry("assistant-2", "No further changes");
     await env.emit("agent_end", {
@@ -204,7 +217,6 @@ describe("Ultrathink git integration", () => {
     const branches = await gitStdout(cwd, ["branch", "--list", "ultrathink/*"]);
     expect(branches.trim()).not.toBe("");
 
-    // Bug #4 fix: should stay on the scratch branch after failed reintegration
     const currentBranch = (await gitStdout(cwd, ["branch", "--show-current"])).trim();
     expect(currentBranch).toBe("ultrathink/deterministic-branch");
   });
@@ -216,7 +228,6 @@ describe("Ultrathink git integration", () => {
 
     await env.invokeCommand("ultrathink", "Implement feature");
 
-    // Simulate agent committing directly via bash tool (git add + git commit)
     await writeRepoFile(cwd, "feature.ts", "export function feature() {}\n");
     await execWithCwd("git", ["add", "-A"], { cwd });
     await execWithCwd("git", ["commit", "-m", "feat: implement feature", "-m", "Agent committed this directly."], { cwd });
@@ -227,11 +238,9 @@ describe("Ultrathink git integration", () => {
       messages: [user("Implement feature"), assistant("Implemented the feature and committed")],
     });
 
-    // Should continue with a review prompt (NOT stop with no-git-changes)
-    expect(env.userMessages).toHaveLength(2); // original + review
-    expect(env.customMessages).toHaveLength(0); // no completion yet
+    expect(env.userMessages).toHaveLength(2);
+    expect(env.customMessages).toHaveLength(0);
 
-    // Second iteration: no changes → stop and reintegrate
     const reviewPrompt = String(env.userMessages[1]?.content);
     env.setLeafAssistantEntry("assistant-2", "Everything looks good");
     await env.emit("agent_end", {
@@ -239,19 +248,16 @@ describe("Ultrathink git integration", () => {
       messages: [user(reviewPrompt), assistant("Everything looks good")],
     });
 
-    // Should stop with no-git-changes and successfully reintegrate
     expect(env.customMessages).toHaveLength(1);
     const summary = env.customMessages[0]?.message.content ?? "";
     expect(summary).toContain("Scratch branch deleted: yes");
 
-    // Should be back on main with the agent's commit
     const currentBranch = (await gitStdout(cwd, ["branch", "--show-current"])).trim();
     expect(currentBranch).toBe("main");
 
     const branches = await gitStdout(cwd, ["branch", "--list", "ultrathink/*"]);
     expect(branches.trim()).toBe("");
 
-    // The agent's commit should be on main
     const log = await gitStdout(cwd, ["log", "--oneline", "-3"]);
     expect(log).toContain("feat: implement feature");
   });
@@ -263,11 +269,9 @@ describe("Ultrathink git integration", () => {
 
     await env.invokeCommand("ultrathink", "Build something");
 
-    // Simulate agent committing some files...
     await writeRepoFile(cwd, "committed.ts", "export const a = 1;\n");
     await execWithCwd("git", ["add", "-A"], { cwd });
     await execWithCwd("git", ["commit", "-m", "feat: partial work"], { cwd });
-    // ...and leaving other files uncommitted
     await writeRepoFile(cwd, "uncommitted.ts", "export const b = 2;\n");
 
     env.setLeafAssistantEntry("assistant-1", "Built most of it");
@@ -276,12 +280,9 @@ describe("Ultrathink git integration", () => {
       messages: [user("Build something"), assistant("Built most of it")],
     });
 
-    // Extension should commit the remaining uncommitted changes
-    // and continue the loop (2 commits total on scratch now)
-    expect(env.userMessages).toHaveLength(2); // original + review
-    expect(env.customMessages).toHaveLength(0); // no completion yet
+    expect(env.userMessages).toHaveLength(2);
+    expect(env.customMessages).toHaveLength(0);
 
-    // Second iteration: no changes → stop and reintegrate with merge commit
     const reviewPrompt = String(env.userMessages[1]?.content);
     env.setLeafAssistantEntry("assistant-2", "All done");
     await env.emit("agent_end", {
@@ -293,9 +294,171 @@ describe("Ultrathink git integration", () => {
     const summary = env.customMessages[0]?.message.content ?? "";
     expect(summary).toContain("Scratch branch deleted: yes");
 
-    // Both files should be in the repo on main
     const log = await gitStdout(cwd, ["log", "--oneline", "-5"]);
     expect(log).toContain("feat: partial work");
     expect(log).toContain("Merge ultrathink/deterministic-branch");
+  });
+
+  it("turns dirty changes into a bootstrap review commit and keeps them in the reviewed range", async () => {
+    const cwd = await createTempGitRepo("ultrathink-review-dirty-");
+    await writeRepoFile(cwd, "dirty.txt", "already changed\n");
+
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink-review", "");
+
+    const startMessage = env.customMessages[0]?.message.content ?? "";
+    const reviewPrompt = String(env.userMessages[0]?.content);
+    const currentBranch = (await gitStdout(cwd, ["branch", "--show-current"])).trim();
+    const bootstrapSubject = (await gitStdout(cwd, ["log", "-1", "--format=%s"])).trim();
+    const diffBase = (await gitStdout(cwd, ["rev-parse", "--short", "HEAD^"])).trim();
+
+    expect(currentBranch).toBe("ultrathink/deterministic-branch");
+    expect(bootstrapSubject).toBe("Bootstrap review touches dirty.txt");
+    expect(startMessage).toContain("Review source: dirty-bootstrap");
+    expect(startMessage).toContain("Bootstrap review touches dirty.txt");
+    expect(reviewPrompt).toContain(`git diff ${diffBase} HEAD`);
+
+    env.setLeafAssistantEntry("assistant-review-1", "No substantial review changes needed");
+    await env.emit("agent_end", {
+      type: "agent_end",
+      messages: [user(reviewPrompt), assistant("No substantial review changes needed")],
+    });
+
+    expect(env.customMessages).toHaveLength(2);
+    const summary = env.customMessages[1]?.message.content ?? "";
+    expect(summary).toContain("Ultrathink review run");
+    expect(summary).toContain("Review source: dirty-bootstrap");
+    expect(summary).toContain("Bootstrap review touches dirty.txt");
+    expect(summary).toContain("Scratch branch commits:");
+    expect(summary).toContain("Summary for bootstrap review commit.");
+    expect(summary).not.toContain("Scratch branch commits:\n- none");
+    expect((await gitStdout(cwd, ["branch", "--show-current"])).trim()).toBe("main");
+    expect((await gitStdout(cwd, ["log", "-1", "--format=%s"])).trim()).toBe("Bootstrap review touches dirty.txt");
+  });
+
+  it("reviews local commits after the last push using the last pushed commit as the diff base", async () => {
+    const cwd = await createRepoWithTrackedMain("ultrathink-review-last-pushed-");
+    await writeRepoFile(cwd, "one.txt", "one\n");
+    await execWithCwd("git", ["add", "one.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "Add first local change"], { cwd });
+    await writeRepoFile(cwd, "two.txt", "two\n");
+    await execWithCwd("git", ["add", "two.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "Add second local change"], { cwd });
+
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink-review", "");
+
+    const diffBase = (await gitStdout(cwd, ["rev-parse", "--short", "HEAD~2"])).trim();
+    const reviewPrompt = String(env.userMessages[0]?.content);
+    const startMessage = env.customMessages[0]?.message.content ?? "";
+
+    expect(startMessage).toContain("Review source: last-pushed");
+    expect(startMessage).toContain("Add first local change");
+    expect(startMessage).toContain("Add second local change");
+    expect(reviewPrompt).toContain(`git diff ${diffBase} HEAD`);
+  });
+
+  it("reviews the first unique local commit when the branch tracks another upstream branch", async () => {
+    const cwd = await createRepoWithTrackedMain("ultrathink-review-first-unique-");
+    await execWithCwd("git", ["checkout", "-b", "feature/first-unique"], { cwd });
+    await setBranchUpstream(cwd, "origin/main");
+    await writeRepoFile(cwd, "feature1.txt", "one\n");
+    await execWithCwd("git", ["add", "feature1.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "Feature commit one"], { cwd });
+    await writeRepoFile(cwd, "feature2.txt", "two\n");
+    await execWithCwd("git", ["add", "feature2.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "Feature commit two"], { cwd });
+
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink-review", "Audit this feature branch.");
+
+    const diffBase = (await gitStdout(cwd, ["rev-parse", "--short", "HEAD~2"])).trim();
+    const reviewPrompt = String(env.userMessages[0]?.content);
+    const startMessage = env.customMessages[0]?.message.content ?? "";
+
+    expect(startMessage).toContain("Review source: first-unique");
+    expect(startMessage).toContain("Feature commit one");
+    expect(startMessage).toContain("Feature commit two");
+    expect(reviewPrompt).toContain(`git diff ${diffBase} HEAD`);
+    expect(reviewPrompt).toContain("Audit this feature branch.");
+  });
+
+  it("reports nothing to review when the tracked branch has no local commits after its upstream", async () => {
+    const cwd = await createRepoWithTrackedMain("ultrathink-review-nothing-");
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink-review", "");
+
+    expect(env.userMessages).toHaveLength(0);
+    expect(env.customMessages).toHaveLength(0);
+    expect(env.ui.notifications.at(-1)?.message).toContain("nothing to review");
+    expect((await gitStdout(cwd, ["branch", "--show-current"])).trim()).toBe("main");
+    expect((await gitStdout(cwd, ["branch", "--list", "ultrathink/*"])).trim()).toBe("");
+  });
+
+  it("fails clearly when the branch has no upstream and no parent branch for merge-base", async () => {
+    const cwd = await createTempGitRepo("ultrathink-review-no-upstream-");
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink-review", "");
+
+    expect(env.userMessages).toHaveLength(0);
+    expect(env.customMessages).toHaveLength(0);
+    expect(env.ui.notifications.at(-1)?.message).toContain("could not find an upstream");
+    expect((await gitStdout(cwd, ["branch", "--show-current"])).trim()).toBe("main");
+    expect((await gitStdout(cwd, ["branch", "--list", "ultrathink/*"])).trim()).toBe("");
+  });
+
+  it("resolves first-unique via merge-base when the branch has no upstream", async () => {
+    const cwd = await createTempGitRepo("ultrathink-review-merge-base-");
+    // Create a feature branch off main with no upstream set
+    await execWithCwd("git", ["checkout", "-b", "feature/no-upstream"], { cwd });
+    await writeRepoFile(cwd, "feat1.txt", "one\n");
+    await execWithCwd("git", ["add", "feat1.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "Feature commit A"], { cwd });
+    await writeRepoFile(cwd, "feat2.txt", "two\n");
+    await execWithCwd("git", ["add", "feat2.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "Feature commit B"], { cwd });
+
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink-review", "Review this feature.");
+
+    const diffBase = (await gitStdout(cwd, ["rev-parse", "--short", "HEAD~2"])).trim();
+    const reviewPrompt = String(env.userMessages[0]?.content);
+    const startMessage = env.customMessages[0]?.message.content ?? "";
+
+    expect(startMessage).toContain("Review source: first-unique");
+    expect(startMessage).toContain("Feature commit A");
+    expect(startMessage).toContain("Feature commit B");
+    expect(reviewPrompt).toContain(`git diff ${diffBase} HEAD`);
+    expect(reviewPrompt).toContain("Review this feature.");
+  });
+
+  it("classifies slashed branch tracking its own pushed counterpart as last-pushed", async () => {
+    const cwd = await createRepoWithTrackedMain("ultrathink-review-slashed-");
+    await execWithCwd("git", ["checkout", "-b", "feature/slashed-name"], { cwd });
+    await pushBranch(cwd, "origin", "feature/slashed-name");
+    await writeRepoFile(cwd, "slashed.txt", "one\n");
+    await execWithCwd("git", ["add", "slashed.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "Local commit on slashed branch"], { cwd });
+
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink-review", "");
+
+    const startMessage = env.customMessages[0]?.message.content ?? "";
+    expect(startMessage).toContain("Review source: last-pushed");
+    expect(startMessage).toContain("Local commit on slashed branch");
   });
 });

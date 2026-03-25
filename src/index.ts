@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { ThinkingLevel } from "@mariozechner/pi-ai";
 import type { ActiveRun, FinalizationResult, IterationRecord, StopReason } from "./types.js";
-import { sendCompletionMessage, setUltrathinkStatus } from "./ui.js";
+import { sendCompletionMessage, sendReviewStartMessage, setUltrathinkStatus } from "./ui.js";
 
 type AssistantLike = {
   role: "assistant";
@@ -124,6 +124,8 @@ function createPreservedFinalization(run: ActiveRun, stopReason: StopReason): Fi
   };
 }
 
+const DEFAULT_REVIEW_RUN_PROMPT_TEXT = "Review and improve the current branch changes";
+
 export default function ultrathinkExtension(pi: ExtensionAPI): void {
   let activeRun: ActiveRun | undefined;
 
@@ -159,27 +161,26 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
           }
         | undefined;
 
-      if (actualCommitCount > 1 && run.namingModel && run.originalHeadSha) {
+      if (actualCommitCount > 1 && run.namingModel) {
         const namingModule = await loadNamingModule();
         const branchDiff = await gitModule.describeCommitRange({
           cwd: ctx.cwd,
           exec: pi.exec,
-          fromRef: run.originalHeadSha,
+          fromRef: run.originalBranchName,
           toRef: run.scratchBranchName,
         });
-        const committedIterations = run.iterations.filter(
-          (iteration) => iteration.commitCreated && iteration.commitSha && iteration.commitSubject && iteration.commitBody,
-        );
+        const scratchCommits = await gitModule.listCommitDetailsBetween({
+          cwd: ctx.cwd,
+          exec: pi.exec,
+          fromRef: run.originalBranchName,
+          toRef: run.scratchBranchName,
+        });
         mergeCommitMessage = await namingModule.generateMergeCommitMessage({
           ctx,
           config: run.namingModel,
           promptText: run.originalPromptText,
           scratchBranchName: run.scratchBranchName,
-          commits: committedIterations.map((iteration) => ({
-            sha: iteration.commitSha!,
-            subject: iteration.commitSubject!,
-            body: iteration.commitBody!,
-          })),
+          commits: scratchCommits,
           diffSummary: branchDiff.diffSummary,
         });
       }
@@ -288,6 +289,7 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
 
     activeRun = stateModule.createActiveRun({
       mode: "git",
+      gitRunKind: "task",
       runId,
       promptText,
       config,
@@ -315,6 +317,119 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       }
 
       await startRun(promptText, ctx);
+    },
+  });
+
+  async function startReviewRun(rawPromptText: string, ctx: ExtensionCommandContext): Promise<void> {
+    if (activeRun) {
+      await finishRun(ctx, "cancelled-by-user");
+    }
+
+    if (!ctx.isIdle()) {
+      ctx.abort();
+      await ctx.waitForIdle();
+    }
+
+    const [{ loadUltrathinkConfig }, gitModule, namingModule, reviewModule, stateModule] = await Promise.all([
+      loadConfigModule(),
+      loadGitModule(),
+      loadNamingModule(),
+      loadReviewModule(),
+      loadStateModule(),
+    ]);
+
+    const config = await loadUltrathinkConfig();
+    const trimmedPromptText = rawPromptText.trim();
+    const promptText = trimmedPromptText || DEFAULT_REVIEW_RUN_PROMPT_TEXT;
+    const continuationPromptTemplate = trimmedPromptText || config.continuationPromptTemplate;
+
+    let namingModel;
+    try {
+      namingModel = await namingModule.ensureNamingModel(ctx, config);
+    } catch (error) {
+      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      return;
+    }
+    if (!namingModel) {
+      ctx.ui.notify("Ultrathink review start cancelled.", "info");
+      return;
+    }
+
+    const runId = stateModule.createRunId();
+    let reviewSetup;
+    try {
+      reviewSetup = await gitModule.prepareReviewRun({
+        cwd: ctx.cwd,
+        exec: pi.exec,
+        generateBranchSlug: async (existingBranchNames) =>
+          await namingModule.generateBranchSlug({
+            ctx,
+            config: namingModel,
+            promptText,
+            existingBranchNames: existingBranchNames.filter((branchName) => branchName.startsWith("ultrathink/")),
+          }),
+        createBootstrapCommitMessage: async ({ changedFiles, diffSummary }) =>
+          await namingModule.generateBootstrapCommitMessage({
+            ctx,
+            config: namingModel,
+            promptText,
+            changedFiles,
+            diffSummary,
+          }),
+        commitBodyMaxChars: config.commitBodyMaxChars,
+      });
+    } catch (error) {
+      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      return;
+    }
+
+    const reviewPrompt = reviewModule.buildReviewPrompt({
+      kind: "review",
+      template: continuationPromptTemplate,
+      originalPromptText: promptText,
+      reviewBaseSha: reviewSetup.reviewExclusiveBaseSha,
+    });
+
+    activeRun = stateModule.createActiveRun({
+      mode: "git",
+      gitRunKind: "review",
+      runId,
+      promptText,
+      config,
+      continuationPromptTemplate,
+      namingModel,
+      originalHeadSha: reviewSetup.originalHeadSha,
+      reviewBaseSha: reviewSetup.reviewExclusiveBaseSha,
+      reviewSource: reviewSetup.reviewSource,
+      reviewStartSha: reviewSetup.reviewStartSha,
+      reviewExclusiveBaseSha: reviewSetup.reviewExclusiveBaseSha,
+      reviewCommits: reviewSetup.reviewCommits,
+      seedScratchCommits: reviewSetup.seedScratchCommits,
+      originalBranchName: reviewSetup.originalBranchName,
+      scratchBranchName: reviewSetup.scratchBranchName,
+    });
+    activeRun.gitBaseline = reviewSetup.baseline;
+    activeRun.expectedPromptText = reviewPrompt;
+    activeRun.awaitingExtensionFollowUp = true;
+
+    stateModule.persistRunStart(pi, activeRun);
+    setUltrathinkStatus(ctx, activeRun);
+    sendReviewStartMessage(pi, {
+      runId,
+      originalBranchName: reviewSetup.originalBranchName,
+      scratchBranchName: reviewSetup.scratchBranchName,
+      reviewSource: reviewSetup.reviewSource,
+      reviewStartSha: reviewSetup.reviewStartSha,
+      reviewExclusiveBaseSha: reviewSetup.reviewExclusiveBaseSha,
+      reviewCommits: reviewSetup.reviewCommits,
+    });
+    pi.sendUserMessage(reviewPrompt);
+  }
+
+  pi.registerCommand("ultrathink-review", {
+    description: "Review and improve the existing branch changes in an Ultrathink scratch branch",
+    handler: async (args, ctx) => {
+      await startReviewRun(args, ctx);
     },
   });
 
@@ -672,6 +787,7 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     }
 
     const reviewPrompt = buildReviewPrompt({
+      kind: run.gitRunKind === "review" ? "review" : "task",
       template: run.continuationPromptTemplate,
       originalPromptText: run.originalPromptText,
       reviewBaseSha: run.reviewBaseSha,

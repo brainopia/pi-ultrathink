@@ -16,6 +16,12 @@ export function installDeterministicNaming(args?: { slugs?: string[] }): void {
         body: [`Summary for iteration v${iteration}.`, ...changedFiles.map((file) => `- ${file}`)].join("\n"),
       };
     },
+    async generateBootstrapCommitMessage({ changedFiles }) {
+      return {
+        subject: `Bootstrap review touches ${changedFiles[0] ?? "repo"}`,
+        body: ["Summary for bootstrap review commit.", ...changedFiles.map((file) => `- ${file}`)].join("\n"),
+      };
+    },
     async generateMergeCommitMessage({ scratchBranchName, commits }) {
       return {
         subject: `Merge ${scratchBranchName}`,

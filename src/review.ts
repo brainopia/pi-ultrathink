@@ -1,13 +1,29 @@
 import { createHash } from "node:crypto";
 import { DEFAULT_CONTINUATION_PROMPT_TEMPLATE } from "./promptTemplate.js";
 import type { StopReason } from "./types.js";
+
 export function buildReviewPrompt(args: {
   template: string;
   originalPromptText: string;
   reviewBaseSha?: string;
+  kind?: "task" | "review";
 }): string {
   const promptBody = args.template.trim() || DEFAULT_CONTINUATION_PROMPT_TEMPLATE;
   const diffCommand = args.reviewBaseSha ? `git diff ${args.reviewBaseSha} HEAD` : "git diff HEAD^ HEAD";
+
+  if (args.kind === "review") {
+    const commitRef = args.reviewBaseSha ?? "HEAD^";
+    return [
+      `Review the repository changes starting from commit ${commitRef}.`,
+      "Inspect them with:",
+      `\`${diffCommand}\``,
+      "",
+      promptBody,
+    ]
+      .filter((section, index, all) => !(section === "" && all[index - 1] === ""))
+      .join("\n")
+      .trim();
+  }
 
   return [
     "Original task:",
