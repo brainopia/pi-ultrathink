@@ -11,9 +11,6 @@ export const DEFAULT_CONFIG: UltrathinkConfig = {
   maxIterations: 4,
   continuationPromptTemplate: DEFAULT_CONTINUATION_PROMPT_TEMPLATE,
   commitBodyMaxChars: 4000,
-  git: {
-    allowDirty: false,
-  },
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -32,12 +29,6 @@ function parseOptionalPositiveInteger(value: unknown, field: string): number | u
   return parsePositiveInteger(value, field);
 }
 
-function parseBoolean(value: unknown, field: string): boolean {
-  if (typeof value !== "boolean") {
-    throw new Error(`${field} must be a boolean.`);
-  }
-  return value;
-}
 
 
 function parseNamingModel(value: unknown): NamingModelConfig {
@@ -132,10 +123,6 @@ export async function loadUltrathinkConfig(): Promise<UltrathinkConfig> {
     return structuredClone(DEFAULT_CONFIG);
   }
 
-  const gitInput = parsed.git;
-  if (gitInput !== undefined && !isObject(gitInput)) {
-    throw new Error("git must be a JSON object when provided.");
-  }
 
   const continuationPromptTemplateInput =
     parsed.continuationPromptTemplate ?? parsed.reviewPrompt ?? DEFAULT_CONFIG.continuationPromptTemplate;
@@ -156,12 +143,6 @@ export async function loadUltrathinkConfig(): Promise<UltrathinkConfig> {
         : parseOptionalPositiveInteger(parsed.commitBodyMaxChars, "commitBodyMaxChars"),
     naming: parsed.naming === undefined ? undefined : parseNamingModel(parsed.naming),
     oracle: parsed.oracle === undefined ? undefined : parseOracleConfig(parsed.oracle),
-    git: {
-      allowDirty:
-        gitInput?.allowDirty === undefined
-          ? DEFAULT_CONFIG.git.allowDirty
-          : parseBoolean(gitInput.allowDirty, "git.allowDirty"),
-    },
   };
 }
 

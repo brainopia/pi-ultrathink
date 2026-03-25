@@ -79,7 +79,6 @@
   - 1 commit — rebase the scratch branch and fast-forward the original branch
   - 2+ commits — create one final AI-authored merge commit on the original branch
 - If reintegration conflicts, the scratch branch is preserved for manual resolution.
-- `git.allowDirty` defaults to `false`; in practice the current implementation refuses to start when the repository is already dirty.
 
 ## Config
 Global config is read from `~/.pi/ultrathink.json`.
@@ -94,7 +93,6 @@ Current supported fields:
 - `oracle.thinkingLevel`
 - `oracle.systemPromptTemplate`
 - `oracle.maxRounds`
-- `git.allowDirty`
 
 ## Important implementation notes
 - This is an ESM TypeScript project; keep local import specifiers using `.js` suffixes inside `.ts` files.

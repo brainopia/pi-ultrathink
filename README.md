@@ -226,9 +226,6 @@ Create `~/.pi/ultrathink.json`:
     "modelId": "claude-sonnet-4",
     "thinkingLevel": "high",
     "maxRounds": 5
-  },
-  "git": {
-    "allowDirty": false
   }
 }
 ```
@@ -240,7 +237,6 @@ Create `~/.pi/ultrathink.json`:
 - `commitBodyMaxChars`: truncation limit for generated commit bodies
 - `naming.provider`: provider id for the small naming model
 - `naming.modelId`: model id for the small naming model
-- `git.allowDirty`: currently kept for backward compatibility, but Ultrathink expects a clean repo before it starts
 
 - `oracle.provider`: provider id for the oracle model
 - `oracle.modelId`: model id for the oracle model

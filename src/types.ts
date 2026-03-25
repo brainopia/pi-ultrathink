@@ -20,9 +20,6 @@ export interface UltrathinkConfig {
   commitBodyMaxChars?: number;
   naming?: NamingModelConfig;
   oracle?: OracleConfig;
-  git: {
-    allowDirty: boolean;
-  };
 }
 
 export type StopReason =
