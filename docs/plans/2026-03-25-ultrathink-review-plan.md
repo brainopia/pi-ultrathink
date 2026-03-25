@@ -21,6 +21,7 @@ The behavior must be directly observable. In a git repository with local commits
 - [x] (2026-03-25 19:26 UTC+8) Ran `npm run check` successfully after the implementation changes.
 - [x] (2026-03-25 19:27 UTC+8) Ran `npm run demo` successfully as a regression check for the shipped git loop behavior.
 - [x] (2026-03-25 19:34 UTC+8) Fixed the dirty-bootstrap completion summary so bootstrap commits appear as scratch-branch commits in the final work log, then re-ran `npm run check` successfully.
+- [x] (2026-03-25 19:41 UTC+8) Updated the ExecPlan interface notes to document the seeded scratch-commit metadata added for dirty-bootstrap review summaries.
 
 ## Surprises & Discoveries
 
@@ -111,7 +112,7 @@ The git workflow lives mostly in `src/git.ts`. A “scratch branch” in this pl
 
 Prompt construction lives in `src/review.ts`. `buildReviewPrompt()` now supports both the existing task-first `/ultrathink` prompt and the review-first `/ultrathink-review` prompt that injects an English header plus `git diff <exclusiveBaseSha> HEAD`. The default continuation body itself lives in `src/promptTemplate.ts`.
 
-Run state lives in `src/types.ts` and `src/state.ts`. `ActiveRun` now distinguishes normal git task runs from review runs with `gitRunKind`, `reviewSource`, `reviewStartSha`, `reviewExclusiveBaseSha`, and `reviewCommits`. `state.ts` persists that metadata as custom session entries of type `ultrathink-state`.
+Run state lives in `src/types.ts` and `src/state.ts`. `ActiveRun` now distinguishes normal git task runs from review runs with `gitRunKind`, `reviewSource`, `reviewStartSha`, `reviewExclusiveBaseSha`, and `reviewCommits`. It also carries `seedScratchCommits` so a dirty-bootstrap run can report the bootstrap commit accurately in the final scratch-branch summary. `state.ts` persists that metadata as custom session entries of type `ultrathink-state`.
 
 The UI helpers live in `src/ui.ts`. They set the short status line, render the visible start-of-run reviewed-commit list for `/ultrathink-review`, and emit the plain-text completion summary that now distinguishes review runs from task runs.
 
@@ -283,6 +284,7 @@ In `src/types.ts`, define stable review-mode metadata rather than reusing vague 
       reviewStartSha?: string;
       reviewExclusiveBaseSha?: string;
       reviewCommits?: ReviewCommitSummary[];
+      seedScratchCommits?: Array<{ sha: string; subject: string; body: string }>;
       ...existing fields...
     }
 
@@ -296,6 +298,7 @@ In `src/git.ts`, add a review-start helper that returns a single self-describing
       reviewStartSha: string;
       reviewExclusiveBaseSha: string;
       reviewCommits: Array<{ sha: string; subject: string }>;
+      seedScratchCommits?: Array<{ sha: string; subject: string; body: string }>;
       baseline: GitSnapshot;
     }
 
@@ -307,4 +310,4 @@ In `src/naming.ts`, either reuse `generateIterationCommitMessage()` for bootstra
 
 In `README.md`, add one new documented command and keep the rest of the public contract stable. Do not change `/ultrathink-oracle` behavior as part of this feature.
 
-Plan revision note: updated again on 2026-03-25 after a follow-up review of the implementation. This revision records the dirty-bootstrap summary fix, the additional metadata needed to surface seeded scratch-branch commits accurately, and the repeated successful `npm run check` validation after that correction.
+Plan revision note: updated again on 2026-03-25 after a follow-up review of the implementation. This revision records the dirty-bootstrap summary fix, the additional metadata needed to surface seeded scratch-branch commits accurately, the matching interface updates in the living plan, and the repeated successful `npm run check` validation after that correction.
