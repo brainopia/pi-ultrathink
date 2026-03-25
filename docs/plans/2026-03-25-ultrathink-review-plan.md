@@ -20,6 +20,7 @@ The behavior must be directly observable. In a git repository with local commits
 - [x] (2026-03-25 19:18 UTC+8) Added `/ultrathink-review`, review-mode prompt assembly, run metadata, start/summary UI, README updates, AGENTS updates, and expanded command-spike plus git integration coverage.
 - [x] (2026-03-25 19:26 UTC+8) Ran `npm run check` successfully after the implementation changes.
 - [x] (2026-03-25 19:27 UTC+8) Ran `npm run demo` successfully as a regression check for the shipped git loop behavior.
+- [x] (2026-03-25 19:34 UTC+8) Fixed the dirty-bootstrap completion summary so bootstrap commits appear as scratch-branch commits in the final work log, then re-ran `npm run check` successfully.
 
 ## Surprises & Discoveries
 
@@ -40,6 +41,9 @@ The behavior must be directly observable. In a git repository with local commits
 
 - Observation: Clean review-mode failures such as “nothing to review” or “missing upstream” are simplest and safest when the range is resolved before creating the scratch branch.
   Evidence: Implementing clean-range resolution first in `prepareReviewRun()` lets `/ultrathink-review` exit without ever creating `ultrathink/...` branches in the no-op and missing-upstream cases, which the new tests assert.
+
+- Observation: The first `/ultrathink-review` implementation still omitted the bootstrap commit from the final “Scratch branch commits” section, even though the bootstrap commit was real work on the scratch branch.
+  Evidence: The dirty-bootstrap path created and reintegrated the bootstrap commit correctly, but `src/ui.ts` originally derived scratch-branch commits only from `run.iterations`, which start after bootstrap creation.
 
 ## Decision Log
 
@@ -87,11 +91,17 @@ The behavior must be directly observable. In a git repository with local commits
   Rationale: This keeps missing-upstream and nothing-to-review exits simple, leaves the repository untouched in those cases, and still preserves the dirty-bootstrap branch-first behavior where it matters.
   Date/Author: 2026-03-25 / Pi
 
+- Decision: Persist seeded scratch-branch commits in run metadata so review summaries can report bootstrap commits accurately.
+  Rationale: Dirty review runs can create meaningful scratch-branch history before iteration `v1`, and the final summary should remain a truthful work log.
+  Date/Author: 2026-03-25 / Pi
+
 ## Outcomes & Retrospective
 
 The feature is implemented. A Pi user can now run `/ultrathink-review` inside a git repository that already contains local work, see a visible reviewed-commit list, receive a fixed English review prompt, and continue the same scratch-branch review loop until another pass no longer changes the repository.
 
 The highest-risk part of the work was preserving the old `/ultrathink` cleanliness rule while making `/ultrathink-review` accept dirty trees. That split now lives in explicit startup paths: `/ultrathink` still uses the strict `prepareScratchBranchRun()` path, while `/ultrathink-review` uses `prepareReviewRun()` and bootstraps dirty changes into a first reviewed commit only for review mode.
+
+A follow-up review pass also corrected the final summary for dirty-bootstrap runs. The implementation now persists seeded scratch-branch commit details so the bootstrap commit appears in the final “Scratch branch commits” section with its body text, not only in the reviewed-commit list.
 
 ## Context and Orientation
 
@@ -297,4 +307,4 @@ In `src/naming.ts`, either reuse `generateIterationCommitMessage()` for bootstra
 
 In `README.md`, add one new documented command and keep the rest of the public contract stable. Do not change `/ultrathink-oracle` behavior as part of this feature.
 
-Plan revision note: updated on 2026-03-25 after implementation completed. This revision marks the finished milestones, records implementation discoveries and decisions, updates the orientation section to match the shipped code, and captures the successful `npm run check` and `npm run demo` results.
+Plan revision note: updated again on 2026-03-25 after a follow-up review of the implementation. This revision records the dirty-bootstrap summary fix, the additional metadata needed to surface seeded scratch-branch commits accurately, and the repeated successful `npm run check` validation after that correction.

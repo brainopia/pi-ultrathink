@@ -3,6 +3,7 @@ import type {
   GitRunKind,
   IterationRecord,
   NamingModelConfig,
+  ReviewCommitDetails,
   ReviewCommitSummary,
   ReviewSource,
   StopReason,
@@ -44,6 +45,7 @@ export function createActiveRun(args: {
   reviewStartSha?: string;
   reviewExclusiveBaseSha?: string;
   reviewCommits?: ReviewCommitSummary[];
+  seedScratchCommits?: ReviewCommitDetails[];
   originalHeadSha?: string;
   originalBranchName?: string;
   scratchBranchName?: string;
@@ -67,6 +69,7 @@ export function createActiveRun(args: {
     reviewStartSha: args.reviewStartSha,
     reviewExclusiveBaseSha: args.reviewExclusiveBaseSha,
     reviewCommits: args.reviewCommits,
+    seedScratchCommits: args.seedScratchCommits,
     continuationPromptTemplate: args.continuationPromptTemplate,
     commitBodyMaxChars: args.config.commitBodyMaxChars,
     iterations: [],
@@ -88,6 +91,7 @@ export function persistRunStart(pi: ExtensionAPI, run: ActiveRun): void {
     reviewStartSha: run.reviewStartSha,
     reviewExclusiveBaseSha: run.reviewExclusiveBaseSha,
     reviewCommits: run.reviewCommits,
+    seedScratchCommits: run.seedScratchCommits,
     originalHeadSha: run.originalHeadSha,
     continuationPromptTemplate: run.continuationPromptTemplate,
     originalBranchName: run.originalBranchName,
@@ -106,6 +110,7 @@ export function persistIteration(pi: ExtensionAPI, run: ActiveRun, record: Itera
     reviewStartSha: run.reviewStartSha,
     reviewExclusiveBaseSha: run.reviewExclusiveBaseSha,
     reviewCommits: run.reviewCommits,
+    seedScratchCommits: run.seedScratchCommits,
     iteration: record.iteration,
     label: record.label,
     answerDigest: record.answerDigest,
@@ -132,6 +137,7 @@ export function persistStop(pi: ExtensionAPI, run: ActiveRun, stopReason: StopRe
     reviewStartSha: run.reviewStartSha,
     reviewExclusiveBaseSha: run.reviewExclusiveBaseSha,
     reviewCommits: run.reviewCommits,
+    seedScratchCommits: run.seedScratchCommits,
     originalHeadSha: run.originalHeadSha,
     iteration: run.iteration,
     continuationPromptTemplate: run.continuationPromptTemplate,

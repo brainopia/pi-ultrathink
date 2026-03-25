@@ -153,6 +153,7 @@ async function resolveReviewSourceFromUpstream(args: {
   reviewStartSha: string;
   reviewExclusiveBaseSha: string;
   reviewCommits: ReviewCommitSummary[];
+  seedScratchCommits?: ReviewCommitDetails[];
 }> {
   const upstreamResult = await runGit(args.exec, args.cwd, [
     "rev-parse",
@@ -322,6 +323,13 @@ export async function prepareReviewRun(args: {
     reviewStartSha: bootstrapCommit.commitSha,
     reviewExclusiveBaseSha: bootstrapCommit.commitParentSha,
     reviewCommits,
+    seedScratchCommits: [
+      {
+        sha: bootstrapCommit.commitSha,
+        subject: bootstrapCommit.commitSubject ?? bootstrapCommitMessage.subject,
+        body: bootstrapCommit.commitBody ?? bootstrapCommitMessage.body,
+      },
+    ],
     baseline: await captureGitSnapshot(args.exec, args.cwd),
   };
 }

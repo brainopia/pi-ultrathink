@@ -1,4 +1,12 @@
-import type { ActiveRun, FinalizationResult, IterationRecord, ReviewCommitSummary, ReviewSource, StopReason } from "./types.js";
+import type {
+  ActiveRun,
+  FinalizationResult,
+  IterationRecord,
+  ReviewCommitDetails,
+  ReviewCommitSummary,
+  ReviewSource,
+  StopReason,
+} from "./types.js";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 function describeStopReason(stopReason: StopReason): string {
@@ -51,6 +59,10 @@ function formatBodyLines(body: string | undefined): string[] {
 function formatScratchCommit(iteration: IterationRecord): string[] {
   const firstLine = `- ${iteration.commitSha ?? "(no sha)"} ${iteration.commitSubject ?? iteration.label}`;
   return [firstLine, ...formatBodyLines(iteration.commitBody)];
+}
+
+function formatScratchSeedCommit(commit: ReviewCommitDetails): string[] {
+  return [`- ${commit.sha} ${commit.subject}`, ...formatBodyLines(commit.body)];
 }
 
 function describeReviewSource(reviewSource?: ReviewSource): string | undefined {
@@ -140,7 +152,10 @@ export function sendCompletionMessage(
     return;
   }
 
-  const scratchCommits = args.iterations.filter((iteration) => iteration.commitCreated);
+  const scratchCommitLines = [
+    ...(args.run.seedScratchCommits ?? []).flatMap((commit) => formatScratchSeedCommit(commit)),
+    ...args.iterations.filter((iteration) => iteration.commitCreated).flatMap((iteration) => formatScratchCommit(iteration)),
+  ];
   const openingLine =
     args.run.gitRunKind === "review"
       ? `Ultrathink review run ${args.run.runId} finished because ${describeStopReason(args.stopReason)}.`
@@ -166,12 +181,10 @@ export function sendCompletionMessage(
   }
 
   lines.push("Scratch branch commits:");
-  if (scratchCommits.length === 0) {
+  if (scratchCommitLines.length === 0) {
     lines.push("- none");
   } else {
-    for (const iteration of scratchCommits) {
-      lines.push(...formatScratchCommit(iteration));
-    }
+    lines.push(...scratchCommitLines);
   }
 
   if (args.run.finalization?.mergeCommitSha || args.run.finalization?.mergeCommitSubject || args.run.finalization?.mergeCommitBody) {

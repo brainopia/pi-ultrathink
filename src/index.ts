@@ -404,6 +404,7 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       reviewStartSha: reviewSetup.reviewStartSha,
       reviewExclusiveBaseSha: reviewSetup.reviewExclusiveBaseSha,
       reviewCommits: reviewSetup.reviewCommits,
+      seedScratchCommits: reviewSetup.seedScratchCommits,
       originalBranchName: reviewSetup.originalBranchName,
       scratchBranchName: reviewSetup.scratchBranchName,
     });

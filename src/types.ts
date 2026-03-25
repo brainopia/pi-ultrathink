@@ -88,6 +88,7 @@ export interface ActiveRun {
   reviewStartSha?: string;
   reviewExclusiveBaseSha?: string;
   reviewCommits?: ReviewCommitSummary[];
+  seedScratchCommits?: ReviewCommitDetails[];
   originalHeadSha?: string;
   originalBranchName?: string;
   scratchBranchName?: string;
@@ -119,6 +120,7 @@ export interface PrepareReviewRunResult extends PrepareScratchBranchRunResult {
   reviewStartSha: string;
   reviewExclusiveBaseSha: string;
   reviewCommits: ReviewCommitSummary[];
+  seedScratchCommits?: ReviewCommitDetails[];
 }
 
 export interface PendingCommitResult {
@@ -149,6 +151,7 @@ export interface UltrathinkStateEntry {
   reviewStartSha?: string;
   reviewExclusiveBaseSha?: string;
   reviewCommits?: ReviewCommitSummary[];
+  seedScratchCommits?: ReviewCommitDetails[];
   originalHeadSha?: string;
   continuationPromptTemplate?: string;
   iteration?: number;

@@ -331,6 +331,9 @@ describe("Ultrathink git integration", () => {
     expect(summary).toContain("Ultrathink review run");
     expect(summary).toContain("Review source: dirty-bootstrap");
     expect(summary).toContain("Bootstrap review touches dirty.txt");
+    expect(summary).toContain("Scratch branch commits:");
+    expect(summary).toContain("Summary for bootstrap review commit.");
+    expect(summary).not.toContain("Scratch branch commits:\n- none");
     expect((await gitStdout(cwd, ["branch", "--show-current"])).trim()).toBe("main");
     expect((await gitStdout(cwd, ["log", "-1", "--format=%s"])).trim()).toBe("Bootstrap review touches dirty.txt");
   });
