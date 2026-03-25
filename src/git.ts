@@ -143,7 +143,45 @@ async function prepareScratchBranch(args: {
   throw new Error(`Ultrathink could not find a free scratch-branch name after ${maxAttempts} attempts.`);
 }
 
-async function resolveReviewSourceFromUpstream(args: {
+async function resolveUniqueCommits(args: {
+  cwd: string;
+  exec: ExecLike;
+  originalBranchName: string;
+  originalHeadSha: string;
+}): Promise<{
+  reviewSource: ReviewSource;
+  reviewStartSha: string;
+  reviewExclusiveBaseSha: string;
+  reviewCommits: ReviewCommitSummary[];
+} | null> {
+  const otherBranches = (await listLocalBranches(args.exec, args.cwd)).filter((b) => b !== args.originalBranchName);
+  if (otherBranches.length === 0) return null;
+
+  const result = await runGit(args.exec, args.cwd, ["rev-list", "--reverse", args.originalHeadSha, "--not", ...otherBranches]);
+  if (result.code !== 0) return null;
+  const uniqueShas = result.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (uniqueShas.length === 0) return null;
+
+  const exclusiveBaseSha = await getCommitParentSha(args.exec, args.cwd, uniqueShas[0]!);
+  if (!exclusiveBaseSha) return null;
+
+  const reviewCommits = await listCommitSummariesBetween({
+    cwd: args.cwd,
+    exec: args.exec,
+    fromRef: exclusiveBaseSha,
+    toRef: args.originalHeadSha,
+  });
+  if (reviewCommits.length === 0) return null;
+
+  return {
+    reviewSource: "first-unique",
+    reviewStartSha: reviewCommits[0]!.sha,
+    reviewExclusiveBaseSha: exclusiveBaseSha,
+    reviewCommits,
+  };
+}
+
+async function resolveReviewRange(args: {
   cwd: string;
   exec: ExecLike;
   originalBranchName: string;
@@ -155,58 +193,67 @@ async function resolveReviewSourceFromUpstream(args: {
   reviewCommits: ReviewCommitSummary[];
   seedScratchCommits?: ReviewCommitDetails[];
 }> {
+  // 1. Try the upstream tracking ref first.
   const upstreamResult = await runGit(args.exec, args.cwd, [
     "rev-parse",
     "--abbrev-ref",
     "--symbolic-full-name",
     `${args.originalBranchName}@{u}`,
   ]);
-  if (upstreamResult.code !== 0) {
-    throw new Error(
-      "Ultrathink review needs the current branch to have an upstream or pushed history before it can resolve a clean review range.",
-    );
+
+  if (upstreamResult.code === 0) {
+    const upstreamRef = upstreamResult.stdout.trim();
+    const uniqueCommitsResult = await runGitStrict(args.exec, args.cwd, [
+      "rev-list",
+      "--reverse",
+      `${upstreamRef}..${args.originalHeadSha}`,
+    ]);
+    const uniqueCommitRefs = uniqueCommitsResult.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (uniqueCommitRefs.length === 0) {
+      throw new Error("Ultrathink review found nothing to review on the current branch.");
+    }
+
+    const firstUniqueCommitRef = uniqueCommitRefs[0]!;
+    const reviewExclusiveBaseSha = await getCommitParentSha(args.exec, args.cwd, firstUniqueCommitRef);
+    if (!reviewExclusiveBaseSha) {
+      throw new Error(
+        `Ultrathink review could not determine the parent of the first reviewed commit ${firstUniqueCommitRef}.`,
+      );
+    }
+
+    const reviewCommits = await listCommitSummariesBetween({
+      cwd: args.cwd,
+      exec: args.exec,
+      fromRef: reviewExclusiveBaseSha,
+      toRef: args.originalHeadSha,
+    });
+    if (reviewCommits.length === 0) {
+      throw new Error("Ultrathink review found nothing to review on the current branch.");
+    }
+
+    const upstreamBranchName = upstreamRef.split("/").at(-1) ?? upstreamRef;
+    return {
+      reviewSource: upstreamBranchName === args.originalBranchName ? "last-pushed" : "first-unique",
+      reviewStartSha: reviewCommits[0]!.sha,
+      reviewExclusiveBaseSha,
+      reviewCommits,
+    };
   }
 
-  const upstreamRef = upstreamResult.stdout.trim();
-  const uniqueCommitsResult = await runGitStrict(args.exec, args.cwd, [
-    "rev-list",
-    "--reverse",
-    `${upstreamRef}..${args.originalHeadSha}`,
-  ]);
-  const uniqueCommitRefs = uniqueCommitsResult.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (uniqueCommitRefs.length === 0) {
-    throw new Error("Ultrathink review found nothing to review on the current branch.");
+  // 2. No upstream — find commits unique to this branch.
+  const uniqueResult = await resolveUniqueCommits(args);
+  if (uniqueResult) {
+    return uniqueResult;
   }
 
-  const firstUniqueCommitRef = uniqueCommitRefs[0]!;
-  const reviewExclusiveBaseSha = await getCommitParentSha(args.exec, args.cwd, firstUniqueCommitRef);
-  if (!reviewExclusiveBaseSha) {
-    throw new Error(
-      `Ultrathink review could not determine the parent of the first reviewed commit ${firstUniqueCommitRef}.`,
-    );
-  }
-
-  const reviewCommits = await listCommitSummariesBetween({
-    cwd: args.cwd,
-    exec: args.exec,
-    fromRef: reviewExclusiveBaseSha,
-    toRef: args.originalHeadSha,
-  });
-  if (reviewCommits.length === 0) {
-    throw new Error("Ultrathink review found nothing to review on the current branch.");
-  }
-
-  const upstreamBranchName = upstreamRef.split("/").at(-1) ?? upstreamRef;
-  return {
-    reviewSource: upstreamBranchName === args.originalBranchName ? "last-pushed" : "first-unique",
-    reviewStartSha: reviewCommits[0]!.sha,
-    reviewExclusiveBaseSha,
-    reviewCommits,
-  };
+  throw new Error(
+    "Ultrathink review could not find an upstream, pushed history, or parent branch to resolve a review range. " +
+    "Make sure the branch has at least one unique commit compared to another local branch.",
+  );
 }
 
 export async function captureGitSnapshot(exec: ExecLike, cwd: string): Promise<GitSnapshot> {
@@ -248,7 +295,7 @@ export async function prepareReviewRun(args: {
   if (status.trim().length === 0) {
     const originalBranchName = await getCurrentBranchNameStrict(args.exec, args.cwd);
     const originalHeadSha = await getCommitSha(args.exec, args.cwd, "HEAD");
-    const reviewRange = await resolveReviewSourceFromUpstream({
+    const reviewRange = await resolveReviewRange({
       cwd: args.cwd,
       exec: args.exec,
       originalBranchName,

@@ -403,7 +403,7 @@ describe("Ultrathink git integration", () => {
     expect((await gitStdout(cwd, ["branch", "--list", "ultrathink/*"])).trim()).toBe("");
   });
 
-  it("fails clearly when /ultrathink-review needs an upstream but the branch has none", async () => {
+  it("fails clearly when the branch has no upstream and no parent branch for merge-base", async () => {
     const cwd = await createTempGitRepo("ultrathink-review-no-upstream-");
     const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
     ultrathinkExtension(env.api);
@@ -412,8 +412,35 @@ describe("Ultrathink git integration", () => {
 
     expect(env.userMessages).toHaveLength(0);
     expect(env.customMessages).toHaveLength(0);
-    expect(env.ui.notifications.at(-1)?.message).toContain("upstream or pushed history");
+    expect(env.ui.notifications.at(-1)?.message).toContain("could not find an upstream");
     expect((await gitStdout(cwd, ["branch", "--show-current"])).trim()).toBe("main");
     expect((await gitStdout(cwd, ["branch", "--list", "ultrathink/*"])).trim()).toBe("");
+  });
+
+  it("resolves first-unique via merge-base when the branch has no upstream", async () => {
+    const cwd = await createTempGitRepo("ultrathink-review-merge-base-");
+    // Create a feature branch off main with no upstream set
+    await execWithCwd("git", ["checkout", "-b", "feature/no-upstream"], { cwd });
+    await writeRepoFile(cwd, "feat1.txt", "one\n");
+    await execWithCwd("git", ["add", "feat1.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "Feature commit A"], { cwd });
+    await writeRepoFile(cwd, "feat2.txt", "two\n");
+    await execWithCwd("git", ["add", "feat2.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "Feature commit B"], { cwd });
+
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink-review", "Review this feature.");
+
+    const diffBase = (await gitStdout(cwd, ["rev-parse", "--short", "HEAD~2"])).trim();
+    const reviewPrompt = String(env.userMessages[0]?.content);
+    const startMessage = env.customMessages[0]?.message.content ?? "";
+
+    expect(startMessage).toContain("Review source: first-unique");
+    expect(startMessage).toContain("Feature commit A");
+    expect(startMessage).toContain("Feature commit B");
+    expect(reviewPrompt).toContain(`git diff ${diffBase} HEAD`);
+    expect(reviewPrompt).toContain("Review this feature.");
   });
 });
