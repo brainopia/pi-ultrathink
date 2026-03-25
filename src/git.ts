@@ -235,7 +235,10 @@ async function resolveReviewRange(args: {
       throw new Error("Ultrathink review found nothing to review on the current branch.");
     }
 
-    const upstreamBranchName = upstreamRef.split("/").at(-1) ?? upstreamRef;
+    const remoteResult = await runGit(args.exec, args.cwd, ["config", `branch.${args.originalBranchName}.remote`]);
+    const remoteName = remoteResult.code === 0 ? remoteResult.stdout.trim() : "";
+    const upstreamBranchName =
+      remoteName && upstreamRef.startsWith(remoteName + "/") ? upstreamRef.slice(remoteName.length + 1) : upstreamRef;
     return {
       reviewSource: upstreamBranchName === args.originalBranchName ? "last-pushed" : "first-unique",
       reviewStartSha: reviewCommits[0]!.sha,

@@ -443,4 +443,22 @@ describe("Ultrathink git integration", () => {
     expect(reviewPrompt).toContain(`git diff ${diffBase} HEAD`);
     expect(reviewPrompt).toContain("Review this feature.");
   });
+
+  it("classifies slashed branch tracking its own pushed counterpart as last-pushed", async () => {
+    const cwd = await createRepoWithTrackedMain("ultrathink-review-slashed-");
+    await execWithCwd("git", ["checkout", "-b", "feature/slashed-name"], { cwd });
+    await pushBranch(cwd, "origin", "feature/slashed-name");
+    await writeRepoFile(cwd, "slashed.txt", "one\n");
+    await execWithCwd("git", ["add", "slashed.txt"], { cwd });
+    await execWithCwd("git", ["commit", "-m", "Local commit on slashed branch"], { cwd });
+
+    const env = createFakePiEnvironment({ cwd, execImpl: execWithCwd });
+    ultrathinkExtension(env.api);
+
+    await env.invokeCommand("ultrathink-review", "");
+
+    const startMessage = env.customMessages[0]?.message.content ?? "";
+    expect(startMessage).toContain("Review source: last-pushed");
+    expect(startMessage).toContain("Local commit on slashed branch");
+  });
 });
