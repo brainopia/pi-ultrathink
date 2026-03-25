@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ThinkingLevel } from "@mariozechner/pi-ai";
 import type { ActiveRun, FinalizationResult, IterationRecord, StopReason } from "./types.js";
 import { sendCompletionMessage, setUltrathinkStatus } from "./ui.js";
 
@@ -31,6 +32,8 @@ let namingModulePromise: Promise<typeof import("./naming.js")> | undefined;
 let promptEditorModulePromise: Promise<typeof import("./promptEditor.js")> | undefined;
 let reviewModulePromise: Promise<typeof import("./review.js")> | undefined;
 let stateModulePromise: Promise<typeof import("./state.js")> | undefined;
+let oracleModulePromise: Promise<typeof import("./oracle.js")> | undefined;
+let oracleSetupWidgetModulePromise: Promise<typeof import("./oracleSetupWidget.js")> | undefined;
 
 function loadConfigModule(): Promise<typeof import("./config.js")> {
   return (configModulePromise ??= import("./config.js"));
@@ -54,6 +57,14 @@ function loadReviewModule(): Promise<typeof import("./review.js")> {
 
 function loadStateModule(): Promise<typeof import("./state.js")> {
   return (stateModulePromise ??= import("./state.js"));
+}
+
+function loadOracleModule(): Promise<typeof import("./oracle.js")> {
+  return (oracleModulePromise ??= import("./oracle.js"));
+}
+
+function loadOracleSetupWidgetModule(): Promise<typeof import("./oracleSetupWidget.js")> {
+  return (oracleSetupWidgetModulePromise ??= import("./oracleSetupWidget.js"));
 }
 
 function isAssistantMessage(message: AgentMessageLike): message is AssistantLike {
@@ -99,7 +110,7 @@ function getLeafAssistantEntryId(ctx: ExtensionContext): string | undefined {
 }
 
 function isNormalCompletion(stopReason: StopReason): boolean {
-  return stopReason === "no-git-changes" || stopReason === "max-iterations";
+  return stopReason === "no-git-changes" || stopReason === "max-iterations" || stopReason === "oracle-accepted" || stopReason === "oracle-max-rounds";
 }
 
 function createPreservedFinalization(run: ActiveRun, stopReason: StopReason): FinalizationResult {
@@ -200,7 +211,17 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       lastIteration.stopReason = stopReason;
     }
 
-    await finalizeRunIfNeeded(ctx, run, stopReason);
+    // Dispose oracle session if present
+    if (run.mode === "oracle") {
+      const { disposeOracle } = await loadOracleModule();
+      disposeOracle((run as any)._oracleSession);
+      (run as any)._oracleSession = undefined;
+    }
+
+    if (run.mode === "git") {
+      await finalizeRunIfNeeded(ctx, run, stopReason);
+    }
+
     const { persistStop } = await loadStateModule();
     persistStop(pi, run, stopReason);
     sendCompletionMessage(pi, { run, stopReason, iterations: run.iterations });
@@ -266,6 +287,7 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     }
 
     activeRun = stateModule.createActiveRun({
+      mode: "git",
       runId,
       promptText,
       config,
@@ -293,6 +315,186 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       }
 
       await startRun(promptText, ctx);
+    },
+  });
+
+  // -------------------------------------------------------------------
+  // Oracle mode
+  // -------------------------------------------------------------------
+
+  async function startOracleRun(promptText: string, ctx: ExtensionCommandContext): Promise<void> {
+    if (activeRun) {
+      await finishRun(ctx, "cancelled-by-user");
+    }
+
+    if (!ctx.isIdle()) {
+      ctx.abort();
+      await ctx.waitForIdle();
+    }
+
+    const [{ loadUltrathinkConfig }, stateModule, oracleModule, setupWidgetModule] = await Promise.all([
+      loadConfigModule(),
+      loadStateModule(),
+      loadOracleModule(),
+      loadOracleSetupWidgetModule(),
+    ]);
+
+    const config = await loadUltrathinkConfig();
+    const oracleConfig = config.oracle ?? {};
+    const maxRounds = oracleConfig.maxRounds ?? 5;
+
+    // Resolve default model for oracle
+    const availableModels = ctx.modelRegistry.getAvailable();
+    if (availableModels.length === 0) {
+      ctx.ui.notify("No models available. Check your API keys.", "error");
+      return;
+    }
+
+    let defaultModel = ctx.model ?? availableModels[0];
+    if (oracleConfig.provider && oracleConfig.modelId) {
+      const configured = ctx.modelRegistry.find(oracleConfig.provider, oracleConfig.modelId);
+      if (configured) defaultModel = configured;
+    }
+
+    const defaultThinkingLevel: ThinkingLevel = (oracleConfig.thinkingLevel as ThinkingLevel) ?? "high";
+    const defaultSystemPrompt = oracleConfig.systemPromptTemplate ?? oracleModule.DEFAULT_ORACLE_SYSTEM_PROMPT;
+
+    // Show setup widget
+    const setupResult = await setupWidgetModule.showOracleSetup(ctx, {
+      models: availableModels,
+      defaultModel,
+      defaultThinkingLevel,
+      defaultSystemPrompt,
+    });
+
+    if (!setupResult) {
+      ctx.ui.notify("Oracle run cancelled.", "info");
+      return;
+    }
+
+    // Create the oracle session
+    let oracleSession: import("./oracle.js").OracleSession;
+    try {
+      oracleSession = await oracleModule.createOracleSession({
+        model: setupResult.model,
+        thinkingLevel: setupResult.thinkingLevel,
+        systemPrompt: setupResult.systemPrompt,
+        cwd: ctx.cwd,
+      });
+    } catch (error) {
+      ctx.ui.notify(`Failed to create oracle session: ${error instanceof Error ? error.message : String(error)}`, "error");
+      return;
+    }
+
+    const runId = stateModule.createRunId();
+    activeRun = stateModule.createActiveRun({
+      mode: "oracle",
+      runId,
+      promptText,
+      config,
+      continuationPromptTemplate: "",
+      oracleMaxRounds: maxRounds,
+    });
+    (activeRun as any)._oracleSession = oracleSession;
+
+    stateModule.persistRunStart(pi, activeRun);
+    setUltrathinkStatus(ctx, activeRun);
+    pi.sendUserMessage(promptText);
+  }
+
+  async function handleOracleAgentEnd(event: { messages: AgentMessageLike[] }, ctx: ExtensionContext): Promise<void> {
+    const run = activeRun;
+    if (!run || run.mode !== "oracle") return;
+
+    const oracleSession: import("./oracle.js").OracleSession | undefined = (run as any)._oracleSession;
+    if (!oracleSession) {
+      await finishRun(ctx, "cancelled-by-user");
+      return;
+    }
+
+    const assistantMessage = getLastAssistant(event.messages);
+    if (!assistantMessage) return;
+
+    if (assistantMessage.stopReason === "aborted") {
+      await finishRun(ctx, "cancelled-by-interrupt");
+      return;
+    }
+
+    if (run.cancelRequested === "user") {
+      await finishRun(ctx, "cancelled-by-user");
+      return;
+    }
+
+    const assistantText = getAssistantText(assistantMessage);
+    run.oracleRound = (run.oracleRound ?? 0) + 1;
+    const round = run.oracleRound;
+    run.iteration = round;
+
+    // Label the assistant entry
+    const assistantEntryId = getLeafAssistantEntryId(ctx);
+    if (assistantEntryId) {
+      pi.setLabel(assistantEntryId, `ultrathink-oracle:v${round}`);
+    }
+
+    // Send agent's response to the oracle for review
+    setUltrathinkStatus(ctx, run);
+
+    const { sendToOracle } = await loadOracleModule();
+    let oracleResult: import("./oracle.js").OracleResult;
+    try {
+      const oraclePrompt = round === 1
+        ? `The user's task was:\n\n${run.originalPromptText}\n\nThe agent has completed its first pass. Here is its response:\n\n${assistantText}\n\nPlease review the work by examining the codebase with your tools. If the work is complete and correct, call oracle_accept. Otherwise, provide specific feedback.`
+        : `The agent has responded to your feedback:\n\n${assistantText}\n\nPlease review again. If the work is now complete and correct, call oracle_accept. Otherwise, provide further feedback.`;
+      oracleResult = await sendToOracle(oracleSession, oraclePrompt);
+    } catch (error) {
+      pi.sendMessage(
+        { customType: "ultrathink-oracle-error", display: true, content: `Oracle error: ${error instanceof Error ? error.message : String(error)}` },
+        { triggerTurn: false },
+      );
+      await finishRun(ctx, "oracle-max-rounds");
+      return;
+    }
+
+    if (run.cancelRequested === "user") {
+      await finishRun(ctx, "cancelled-by-user");
+      return;
+    }
+
+    if (oracleResult.accepted) {
+      run.oracleAcceptSummary = oracleResult.acceptSummary;
+      await finishRun(ctx, "oracle-accepted");
+      return;
+    }
+
+    // Check max rounds
+    const maxRounds = run.oracleMaxRounds ?? 5;
+    if (round >= maxRounds) {
+      await finishRun(ctx, "oracle-max-rounds");
+      return;
+    }
+
+    // Send oracle feedback to the main agent as a visible user message
+    const feedbackMessage = `🔮 **Oracle Review (round ${round}):**\n\n${oracleResult.responseText}`;
+    run.awaitingExtensionFollowUp = true;
+    run.expectedPromptText = feedbackMessage;
+    setUltrathinkStatus(ctx, run);
+    if (ctx.isIdle()) {
+      pi.sendUserMessage(feedbackMessage);
+    } else {
+      pi.sendUserMessage(feedbackMessage, { deliverAs: "followUp" });
+    }
+  }
+
+  pi.registerCommand("ultrathink-oracle", {
+    description: "Start an oracle-reviewed ultrathink session (no git required)",
+    handler: async (args, ctx) => {
+      const promptText = args.trim();
+      if (!promptText) {
+        ctx.ui.notify("Usage: /ultrathink-oracle <prompt>", "warning");
+        return;
+      }
+
+      await startOracleRun(promptText, ctx);
     },
   });
 
@@ -324,6 +526,16 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
     const run = activeRun;
     if (!run) return;
 
+    if (run.mode === "oracle") {
+      const promptText = getAgentPromptText(event.messages);
+      if (!promptText || promptText !== run.expectedPromptText) {
+        return;
+      }
+      await handleOracleAgentEnd(event, ctx);
+      return;
+    }
+
+    // ── Git mode (unchanged) ──
     const promptText = getAgentPromptText(event.messages);
     if (!promptText || promptText !== run.expectedPromptText) {
       return;
@@ -371,7 +583,6 @@ export default function ultrathinkExtension(pi: ExtensionAPI): void {
       });
 
       if (pendingCommit.agentCommitted) {
-        // Agent committed changes directly — record the HEAD commit info
         const headInfo = await getHeadCommitInfo({ exec: pi.exec, cwd: ctx.cwd });
         commitCreated = true;
         commitSha = headInfo.sha;

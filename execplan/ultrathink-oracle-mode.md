@@ -58,7 +58,8 @@ After implementing this plan, a user can:
 
 ## Outcomes & Retrospective
 
-(not yet started)
+
+All 7 milestones implemented. 28 tests pass (15 existing + 13 new). Typecheck clean. The implementation adds 4 new source files (`oracle.ts`, `oracleSetupWidget.ts`, test file, execplan) and modifies 5 existing files (`index.ts`, `types.ts`, `config.ts`, `state.ts`, `ui.ts`, `README.md`, `AGENTS.md`). No new runtime dependencies introduced — uses only the existing `@mariozechner/pi-coding-agent` peer dependency and its re-exports.
 
 
 ## Context and Orientation

@@ -13,6 +13,10 @@ function describeStopReason(stopReason: StopReason): string {
       return "the user sent another prompt, so the active loop was cancelled";
     case "cancelled-by-interrupt":
       return "the active agent turn was interrupted, so the loop was cancelled";
+    case "oracle-accepted":
+      return "the oracle accepted the work";
+    case "oracle-max-rounds":
+      return "the oracle review round limit was reached without acceptance";
   }
 }
 
@@ -55,6 +59,13 @@ export function setUltrathinkStatus(ctx: ExtensionContext, run?: ActiveRun): voi
     return;
   }
 
+  if (run.mode === "oracle") {
+    const round = run.oracleRound ?? 0;
+    const max = run.oracleMaxRounds ?? 5;
+    ctx.ui.setStatus("ultrathink", `🔮 oracle round ${round}/${max}`);
+    return;
+  }
+
   const nextIteration = Math.min(run.iteration + 1, run.maxIterations);
   const branch = run.scratchBranchName ? ` • ${run.scratchBranchName}` : "";
   ctx.ui.setStatus("ultrathink", `🧠 ultrathink v${nextIteration}/${run.maxIterations}${branch}`);
@@ -68,6 +79,11 @@ export function sendCompletionMessage(
     iterations: IterationRecord[];
   },
 ): void {
+  if (args.run.mode === "oracle") {
+    sendOracleCompletionMessage(pi, args);
+    return;
+  }
+
   const scratchCommits = args.iterations.filter((iteration) => iteration.commitCreated);
   const lines = [
     `Ultrathink run ${args.run.runId} finished because ${describeStopReason(args.stopReason)}.`,
@@ -91,6 +107,34 @@ export function sendCompletionMessage(
     lines.push("Final merge commit:");
     lines.push(`- ${args.run.finalization.mergeCommitSha ?? "(no sha)"} ${args.run.finalization.mergeCommitSubject ?? "(no subject)"}`);
     lines.push(...formatBodyLines(args.run.finalization.mergeCommitBody));
+  }
+
+  pi.sendMessage(
+    {
+      customType: "ultrathink-summary",
+      display: true,
+      content: lines.join("\n"),
+    },
+    { triggerTurn: false },
+  );
+}
+
+function sendOracleCompletionMessage(
+  pi: ExtensionAPI,
+  args: {
+    run: ActiveRun;
+    stopReason: StopReason;
+    iterations: IterationRecord[];
+  },
+): void {
+  const rounds = args.run.oracleRound ?? 0;
+  const lines = [
+    `🔮 Oracle run ${args.run.runId} finished because ${describeStopReason(args.stopReason)}.`,
+    `Rounds: ${rounds}`,
+  ];
+
+  if (args.stopReason === "oracle-accepted" && args.run.oracleAcceptSummary) {
+    lines.push(`Oracle verdict: ${args.run.oracleAcceptSummary}`);
   }
 
   pi.sendMessage(

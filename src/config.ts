@@ -2,7 +2,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CONTINUATION_PROMPT_TEMPLATE } from "./promptTemplate.js";
-import type { NamingModelConfig, UltrathinkConfig } from "./types.js";
+import type { NamingModelConfig, OracleConfig, UltrathinkConfig } from "./types.js";
 
 export const ULTRATHINK_CONFIG_DISPLAY_PATH = "~/.pi/ultrathink.json";
 export const ULTRATHINK_CONFIG_PATH_ENV = "PI_ULTRATHINK_CONFIG_PATH";
@@ -59,6 +59,48 @@ function parseNamingModel(value: unknown): NamingModelConfig {
   };
 }
 
+function parseOracleConfig(value: unknown): OracleConfig {
+  if (!isObject(value)) {
+    throw new Error("oracle must be a JSON object when provided.");
+  }
+
+  const result: OracleConfig = {};
+
+  if (value.provider !== undefined) {
+    if (typeof value.provider !== "string" || value.provider.trim() === "") {
+      throw new Error("oracle.provider must be a non-empty string.");
+    }
+    result.provider = value.provider.trim();
+  }
+
+  if (value.modelId !== undefined) {
+    if (typeof value.modelId !== "string" || value.modelId.trim() === "") {
+      throw new Error("oracle.modelId must be a non-empty string.");
+    }
+    result.modelId = value.modelId.trim();
+  }
+
+  if (value.thinkingLevel !== undefined) {
+    if (typeof value.thinkingLevel !== "string" || value.thinkingLevel.trim() === "") {
+      throw new Error("oracle.thinkingLevel must be a non-empty string.");
+    }
+    result.thinkingLevel = value.thinkingLevel.trim();
+  }
+
+  if (value.systemPromptTemplate !== undefined) {
+    if (typeof value.systemPromptTemplate !== "string") {
+      throw new Error("oracle.systemPromptTemplate must be a string.");
+    }
+    result.systemPromptTemplate = value.systemPromptTemplate;
+  }
+
+  if (value.maxRounds !== undefined) {
+    result.maxRounds = parsePositiveInteger(value.maxRounds, "oracle.maxRounds");
+  }
+
+  return result;
+}
+
 export function getUltrathinkConfigPath(): string {
   const override = process.env[ULTRATHINK_CONFIG_PATH_ENV]?.trim();
   if (override) {
@@ -113,6 +155,7 @@ export async function loadUltrathinkConfig(): Promise<UltrathinkConfig> {
         ? DEFAULT_CONFIG.commitBodyMaxChars
         : parseOptionalPositiveInteger(parsed.commitBodyMaxChars, "commitBodyMaxChars"),
     naming: parsed.naming === undefined ? undefined : parseNamingModel(parsed.naming),
+    oracle: parsed.oracle === undefined ? undefined : parseOracleConfig(parsed.oracle),
     git: {
       allowDirty:
         gitInput?.allowDirty === undefined

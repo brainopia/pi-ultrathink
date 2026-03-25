@@ -1,8 +1,9 @@
 # pi-ultrathink — Agent Notes
 
 ## What this repository is
-- `pi-ultrathink` is a Pi extension package that adds `/ultrathink <prompt>`.
-- It turns one prompt into a visible multi-pass review loop driven by Git changes.
+- `pi-ultrathink` is a Pi extension package that adds `/ultrathink <prompt>` and `/ultrathink-oracle <prompt>`.
+- `/ultrathink` turns one prompt into a visible multi-pass review loop driven by Git changes.
+- `/ultrathink-oracle` uses an AI oracle reviewer that evaluates the agent's work through bidirectional dialogue. Works without git.
 - User-facing usage lives in `README.md`.
 - Design history lives in `execplan/ultrathink-review-loop.md`, but current `src/` code and tests are the source of truth if the plan and implementation diverge.
 
@@ -31,6 +32,8 @@
 - `src/state.ts` — active run creation and persisted custom session entries
 - `src/ui.ts` — lightweight status line and completion summary helpers
 - `src/types.ts` — shared types for runtime and tests
+- `src/oracle.ts` — oracle session creation, `oracle_accept` tool, send/receive, disposal
+- `src/oracleSetupWidget.ts` — TUI overlay for oracle model/thinking/prompt selection
 - `test/support/fakePi.ts` — fake Pi extension harness for deterministic tests
 - `test/support/gitTestUtils.ts` — temp git repo helpers and real `git` execution for tests
 - `test/support/globalConfigTestUtils.ts` — temp global-config override helpers for tests and demo
@@ -38,21 +41,33 @@
 - `test/ultrathink-command-spike.spec.ts` — prompt shape + continuation template behavior + naming-model persistence
 - `test/ultrathink-orchestration.spec.ts` — cancellation and loop-stop flow
 - `test/ultrathink-git.spec.ts` — scratch-branch commits, reintegration, and dirty repo handling
+- `test/ultrathink-oracle.spec.ts` — oracle mode: config, UI, stop reasons, state management
 - `demo/fakeProvider.ts` — scripted fake provider/tooling for the SDK demo
 - `demo/runDemo.ts` — end-to-end demo using the real extension in temp repos
 - `execplan/ultrathink-review-loop.md` — original design log / historical plan
 - `execplan/ultrathink-ai-branch-merge-flow.md` — current branch-first design and implementation log
+- `execplan/ultrathink-oracle-mode.md` — oracle mode design and implementation plan
 
 ## Runtime behavior and invariants
-- Only one active Ultrathink run is tracked per session.
-- Starting a new `/ultrathink` run cancels any currently active one.
+- Only one active Ultrathink run is tracked per session (git-based or oracle-based).
+- Starting a new `/ultrathink` or `/ultrathink-oracle` run cancels any currently active one.
 - The initial task is sent as a normal visible user message via `pi.sendUserMessage(promptText)`.
 - Follow-up review passes are also visible user messages, not hidden control messages.
 - Pi's interrupt action cancels the active Ultrathink loop; the extension detects this via `stopReason === "aborted"` on the assistant message in the `agent_end` handler.
 - If the user types another prompt during an active run, the loop stops with `cancelled-by-user`.
-- Assistant replies for completed iterations are labeled `ultrathink:vN`.
+- Assistant replies for completed git-mode iterations are labeled `ultrathink:vN`.
+- Assistant replies for oracle-mode iterations are labeled `ultrathink-oracle:vN`.
 - Minimal state is persisted as custom session entries of type `ultrathink-state`.
 - Do not add tracked repo artifacts for run metadata; Git diffs should reflect project changes only.
+
+## Oracle behavior
+- Oracle mode works without git — usable in any directory.
+- The oracle is a separate in-process `AgentSession` created via `createAgentSession()` from the Pi SDK.
+- The oracle has its own tools (read, bash, grep, find, ls) and can independently inspect the codebase.
+- The oracle signals acceptance by calling a custom `oracle_accept` tool (no text parsing).
+- Oracle feedback is sent to the main session as visible user messages.
+- The oracle maintains full conversation context across rounds (persistent session).
+- Stop reasons: `oracle-accepted` (oracle called oracle_accept), `oracle-max-rounds` (hit maxRounds without acceptance).
 
 ## Git behavior
 - Git is the main continuation signal.
@@ -74,13 +89,18 @@ Current supported fields:
 - `commitBodyMaxChars`
 - `naming.provider`
 - `naming.modelId`
+- `oracle.provider`
+- `oracle.modelId`
+- `oracle.thinkingLevel`
+- `oracle.systemPromptTemplate`
+- `oracle.maxRounds`
 - `git.allowDirty`
 
 ## Important implementation notes
 - This is an ESM TypeScript project; keep local import specifiers using `.js` suffixes inside `.ts` files.
 - There is no transpile step in normal development; `tsc` is used only for typechecking.
 - The project intentionally keeps runtime dependencies minimal and relies mostly on Node built-ins plus Pi peer deps.
-- The review loop is driven by `agent_end`, `input`, `session_start`, and the `/ultrathink` command.
+- The review loop is driven by `agent_end`, `input`, `session_start`, and the `/ultrathink` and `/ultrathink-oracle` commands.
 
 ## Known gotcha: ExecPlan vs shipped behavior
 The ExecPlan contains notes about rendering placeholders like `{headSha}` and `{parentSha}` inside the continuation template. The shipped implementation does **not** currently expand these placeholders.
