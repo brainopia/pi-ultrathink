@@ -93,8 +93,9 @@ The review range is chosen like this:
 1. **Dirty working tree** → create a bootstrap commit on the scratch branch and review that commit first
 2. **Current branch tracks its pushed branch** → review commits after the last pushed point (`last-pushed`)
 3. **Current branch tracks another upstream branch** → review commits starting at the first commit unique to the current branch (`first-unique`)
+4. **No upstream, but other local branches exist** → find commits unique to the current branch compared to all other local branches (`first-unique`)
 
-If there is nothing to review, Ultrathink tells you so and does not start a run. If a clean review needs upstream information but the current branch has no upstream, Ultrathink fails clearly instead of guessing a base branch.
+If there is nothing to review, Ultrathink tells you so and does not start a run. If the current branch has no upstream and no other local branch to compare against, Ultrathink fails clearly instead of guessing a base.
 ### Conversation flow
 
 The loop stays visible in chat history:
@@ -163,7 +164,7 @@ If the final rebase or merge conflicts, Ultrathink aborts the operation, preserv
 4. includes that bootstrap commit in the visible reviewed-commit list
 5. reviews the resulting range with a prompt that always includes an English header and `git diff <exclusiveBaseSha> HEAD`
 
-For a clean `/ultrathink-review` start, the current branch must have an upstream if Ultrathink needs one to resolve the review range. The extension does not guess `main` or `master`.
+For a clean `/ultrathink-review` start, the extension first checks for an upstream tracking branch. If none exists, it falls back to comparing against other local branches. It only fails when there is no upstream and no other local branch to determine a review range.
 
 ## When does the loop stop?
 

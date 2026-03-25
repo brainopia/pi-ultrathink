@@ -76,6 +76,7 @@
 - Every `/ultrathink` run starts on a dedicated scratch branch named `ultrathink/<ai-slug>` and still requires a clean working tree.
 - Every `/ultrathink-review` run also starts on a dedicated scratch branch named `ultrathink/<ai-slug>`, but it may bootstrap dirty working-tree changes into the first reviewed commit.
 - Review-mode sources are `dirty-bootstrap`, `last-pushed`, and `first-unique`. The reviewed commit list is shown before the first pass.
+- Review range resolution tries the upstream tracking branch first, then falls back to finding unique commits compared to other local branches. It fails only when neither strategy can determine a range.
 - If an iteration leaves no repository changes, no commit is created and the run stops with `no-git-changes`.
 - If an iteration changes the repo, the extension stages everything and creates a commit with AI-generated subject/body.
 - Normal completion reintegrates work back into the original branch automatically:

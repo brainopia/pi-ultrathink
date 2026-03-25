@@ -1,5 +1,9 @@
 # Ultrathink Review Design
 
+## OUTDATED
+
+- Case 2 step 2 says 'If no upstream exists, fail with a clear message.' The implementation now falls back to resolveUniqueCommits(), which finds commits unique to the current branch compared to all other local branches. The error is thrown only when both upstream and merge-base fallback fail (af1322b).
+
 Date: 2026-03-25
 
 ## Summary
